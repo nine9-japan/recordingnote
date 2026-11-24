@@ -44,7 +44,7 @@ export function createBrowserASR() {
         return library;
       }).catch(() => {
         libraryPromise = null;
-        throw new Error("文字起こしライブラリをCDNから読み込めませんでした。インターネット接続と cdn.jsdelivr.net の通信許可を確認して再試行するか、「Colabバックエンド」へ切り替えてください。");
+        throw new Error("文字起こしライブラリをCDNから読み込めませんでした。インターネット接続と cdn.jsdelivr.net の通信許可を確認して再試行するか、「このPCのHaas-ja」へ切り替えてください。");
       });
     }
     return libraryPromise;
@@ -69,7 +69,7 @@ export function createBrowserASR() {
           onEvent({ type: "notice", message: "この環境はWebGPUに対応していないため、WASM（CPU）で再試行します。処理に時間がかかる場合があります。" });
           continue;
         }
-        if (device === "wasm") onEvent({ type: "notice", message: "WASM（CPU）を使用します。PCの処理能力が足りない場合は「Colabバックエンド」へ切り替えられます。" });
+        if (device === "wasm") onEvent({ type: "notice", message: "WASM（CPU）を使用します。PCの処理能力が足りない場合は「このPCのHaas-ja」へ切り替えられます。" });
         try {
           if (!cached) {
             // Whisper's encoder benefits from fp16; q4 keeps the decoder smaller.
@@ -118,7 +118,7 @@ export function createBrowserASR() {
           }
         }
       }
-      throw new Error(`ブラウザ内の文字起こしに失敗しました。${failureReason(lastError)} 再試行しても解決しない場合は「Colabバックエンド」へ切り替えてください。音声は送信していません。`);
+      throw new Error(`ブラウザ内の文字起こしに失敗しました。${failureReason(lastError)} 再試行しても解決しない場合は「このPCのHaas-ja」へ切り替えてください。音声は送信していません。`);
     } finally {
       if (signal?.aborted) await dispose();
       running = false;
@@ -139,7 +139,7 @@ if (typeof DedicatedWorkerGlobalScope !== "undefined" && globalThis instanceof D
       });
       self.postMessage({ type: "result", id, result });
     } catch (error) {
-      self.postMessage({ type: "error", id, message: error.message || "文字起こしに失敗しました。再試行するかColabへ切り替えてください。" });
+      self.postMessage({ type: "error", id, message: error.message || "文字起こしに失敗しました。再試行するか「このPCのHaas-ja」へ切り替えてください。" });
     }
   });
   self.postMessage({ type: "ready" });

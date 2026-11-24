@@ -1,0 +1,12 @@
+# Haas-ja-v1.0（Linux + NVIDIA GPU / CUDA が必要）
+haas-asr @ git+https://github.com/third-intelligence/Haas-ASR.git
+# haas-asr の導入で protobuf が 5.x に戻り、モデル読み込みが壊れるため固定する
+protobuf==6.33.5
+
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.9
+python-dotenv>=1.0
+httpx>=0.27
+# システムに ffmpeg がない場合に同梱バイナリを使う
+imageio-ffmpeg>=0.5

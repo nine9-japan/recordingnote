@@ -1,17 +1,14 @@
 (() => {
   "use strict";
 
-  const NOTE_PROMPT = "あなたは大学講義の学習ノート作成者です。以下は講義の文字起こしです。この内容だけを使って、日本語で学習ノートを作成してください。ルール: 文字起こしに書かれていない事実・用語・年号を絶対に足さない／見出しで階層化し要点は箇条書き／年号・人名・地名・専門用語は文字起こしの表記をそのまま使う／講義の流れに沿って構成する／冒頭にタイトル行を付ける／末尾に「重要語句」リストと「復習ポイント」を付ける。出力はMarkdownのみ。文字起こしは句読点のない音声認識結果なので、読み取りにくい箇所は無理に補わず趣旨が取れる範囲で整理すること。";
-  const DEFAULT_MODEL = "gemini-2.5-flash";
   const DEFAULT_BROWSER_MODEL = "onnx-community/whisper-large-v3-turbo-ONNX";
   const BROWSER_MODELS = new Set([DEFAULT_BROWSER_MODEL, "onnx-community/kotoba-whisper-v2.2-ONNX"]);
   const ASR_MODULE_URL = new URL("./asr-worker.js", document.currentScript?.src || document.baseURI).href;
   const POLL_INTERVAL = 3000;
+  const api = (path) => new URL(path, document.baseURI).href;
   const $ = (id) => document.getElementById(id);
   const ui = {
     settings: $("settings"),
-    backendUrl: $("backend-url"), backendKey: $("backend-key"),
-    geminiKey: $("gemini-key"), geminiModel: $("gemini-model"),
     testConnection: $("test-connection"), connectionStatus: $("connection-status"),
     connectionLabel: $("connection-label"), connectionMessage: $("connection-message"),
     settingsSaveStatus: $("settings-save-status"), storageWarning: $("storage-warning"),
@@ -26,15 +23,15 @@
     transcribeProgress: $("transcribe-progress"),
     asrEngine: $("asr-engine"), browserAsrOptions: $("browser-asr-options"),
     browserAsrModel: $("browser-asr-model"), asrDescription: $("asr-description"),
-    browserAsrStatus: $("browser-asr-status"),
-    noteEngine: $("note-engine"), engineDescription: $("engine-description"),
+    browserAsrStatus: $("browser-asr-status"), localAsrHelp: $("local-asr-help"),
+    noteProviderStatus: $("note-provider-status"),
     generateNote: $("generate-note"), noteCancel: $("note-cancel"),
     noteMessage: $("note-message"), noteProgress: $("note-progress"),
     noteEmpty: $("note-empty"), noteOutput: $("note-output"),
     copyNote: $("copy-note"), downloadNote: $("download-note"),
     historyCount: $("history-count"), historyEmpty: $("history-empty"),
     historyList: $("history-list"), historyMessage: $("history-message"),
-    corsExample: $("cors-example"), transcriptionSection: $("transcription-section"),
+    transcriptionSection: $("transcription-section"),
   };
   const browserASR = { worker: null, workerUnavailable: false, mainEngine: null, nextId: 0 };
   const state = {
@@ -42,11 +39,12 @@
     note: "", audio: null, audioLabel: "", audioUrl: null,
     recorder: null, stream: null, recording: false, starting: false, stopping: false,
     recordingStarted: 0, recordingTimer: null, checking: false, operation: null,
+    notesReady: false,
   };
 
   class UserError extends Error {}
   class CancelledError extends UserError {
-    constructor(text = "待機を中止しました。Colab側のジョブは継続する場合があります。結果はColabやDriveで確認してください。") {
+    constructor(text = "待機を中止しました。ローカルサーバー側の処理は継続する場合があります。") {
       super(text);
     }
   }
@@ -188,19 +186,20 @@
     updateControls();
   }
 
-  function updateEngineDescription() {
-    const selected = ui.noteEngine.value;
-    const engine = selected === "auto" ? (ui.geminiKey.value.trim() ? "gemini" : "colab") : selected;
-    ui.engineDescription.textContent = `${selected === "auto" ? "自動選択：" : "選択中："}${engine === "gemini" ? "Gemini" : "Colab"}を使います。`;
+  function updateNoteDescription() {
+    ui.noteProviderStatus.textContent = state.notesReady
+      ? "ノート生成：Gemini（このPCのサーバー経由）"
+      : "ノート生成：Gemini APIキーが未設定です。.env に設定してサーバーを再起動してください。";
   }
 
   function updateAsrDescription() {
     const browser = ui.asrEngine.value === "browser";
     ui.browserAsrOptions.hidden = !browser;
     ui.browserAsrStatus.hidden = !browser || !ui.browserAsrStatus.textContent;
+    ui.localAsrHelp.hidden = browser;
     ui.asrDescription.textContent = browser
-      ? "音声は端末の外へ送らず、このブラウザで文字起こしします。Colabの設定は不要です。"
-      : "音声を設定したColabバックエンドへ送り、文字起こしします。URLとAPIキーが必要です。";
+      ? "音声は端末の外へ送らず、このブラウザで文字起こしします。サーバーの設定は不要です。"
+      : "音声をこのPCのサーバーへ送り、Haas-ja-v1.0 で文字起こしします。";
   }
 
   function updateControls() {
@@ -212,11 +211,9 @@
     ui.transcribeStart.disabled = audioLocked || !state.audio;
     ui.generateNote.disabled = audioLocked || !ui.transcript.value.trim();
     ui.transcript.readOnly = busy;
-    ui.noteEngine.disabled = busy;
     ui.asrEngine.disabled = busy;
     ui.browserAsrModel.disabled = busy;
     ui.testConnection.disabled = busy || state.checking;
-    for (const input of [ui.backendUrl, ui.backendKey, ui.geminiKey, ui.geminiModel]) input.disabled = busy || state.checking;
     ui.copyNote.disabled = !state.note.trim();
     ui.downloadNote.disabled = !state.note.trim();
     const transcribing = state.operation?.kind === "transcribe";
@@ -228,10 +225,10 @@
     ui.transcribeStart.textContent = transcribing ? "文字起こし中…" : "文字起こし開始 →";
     ui.transcribeCancel.textContent = state.operation?.engine === "browser" ? "文字起こしを中止" : "待機を中止";
     ui.generateNote.textContent = noting ? "ノート生成中…" : "AIノートを生成 →";
-    ui.testConnection.textContent = state.checking ? "接続を確認中…" : "接続テスト ↗";
+    ui.testConnection.textContent = state.checking ? "状態を確認中…" : "状態を再確認 ↗";
     ui.transcriptCount.textContent = `${ui.transcript.value.length.toLocaleString("ja-JP")}文字`;
     for (const button of ui.historyList.querySelectorAll("button")) button.disabled = audioLocked;
-    updateEngineDescription();
+    updateNoteDescription();
     updateAsrDescription();
   }
 
@@ -240,42 +237,31 @@
     ui.connectionLabel.textContent = text;
   }
 
-  function resetConnection() {
-    setConnection("idle", ui.backendUrl.value.trim() ? "Colab 未確認" : "Colab 未設定");
-    message(ui.connectionMessage, "設定を変更したら、接続テストで確認してください。");
-  }
-
-  function backendConfig(requireKey = true) {
-    const rawUrl = ui.backendUrl.value.trim();
-    if (!rawUrl) throw new UserError("ColabのURLが未設定です。ノートブックを実行し、「接続・API設定」にバックエンドURLを貼り付けてください。");
-    let parsed;
-    try { parsed = new URL(rawUrl); }
-    catch { throw new UserError("バックエンドURLの形式が正しくありません。Colabに表示された https:// で始まるURL全体を貼り付けてください。"); }
-    if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash) {
-      throw new UserError("バックエンドURLには http:// または https:// で始まるURLを入力してください。認証情報・クエリ・#以降は含めず、APIキーは専用欄へ入力してください。");
+  function assertServed() {
+    if (location.protocol !== "http:" && location.protocol !== "https:") {
+      throw new UserError("このページはローカルサーバーから開く必要があります。ターミナルで `python server.py` を実行し、表示された http://127.0.0.1:8000 を開いてください。");
     }
-    if (location.protocol === "https:" && parsed.protocol !== "https:") {
-      throw new UserError("このページからはHTTPSのバックエンドが必要です。Colabに表示された https:// で始まるURLを設定してください。");
-    }
-    const key = ui.backendKey.value.trim();
-    if (requireKey && !key) throw new UserError("ColabのAPIキーが未設定です。ノートブックに表示されたキーを「接続・API設定」に貼り付けてください。");
-    return { url: parsed.href.replace(/\/+$/, ""), key };
   }
 
   function httpError(status, scope) {
-    if (scope === "note" && status === 404) return "このバックエンドはノート生成に未対応です。Gemini APIキーを設定してGeminiを選ぶか、/notes 対応のバックエンドを設定してください。";
-    if (scope === "gemini") {
-      if (status === 400 || status === 401 || status === 403) return "Geminiのリクエストが拒否されました。APIキーの有効性・利用権限・モデル名を確認してください。全文が長い場合はモデルの入力上限も確認してください。";
-      if (status === 404) return "指定したGeminiモデルが見つかりません。設定のモデル名と、このキーで利用できるモデルを確認してください。";
-      if (status === 429) return "Geminiの利用上限に達しました。Google側の利用枠を確認し、時間を置いて再実行してください。";
-      return `Geminiでエラーが発生しました（HTTP ${status}）。Google側の稼働状況と設定を確認し、時間を置いて再実行してください。`;
+    if (scope === "note") {
+      if (status === 502) return "Geminiでノートを生成できませんでした。サーバーの表示とGoogle側の利用状況を確認してください。";
+      if (status === 503) return "Gemini APIキーが未設定です。.env に GEMINI_API_KEY を設定し、サーバーを再起動してください。";
     }
-    if (status === 401 || status === 403) return "Colabの認証に失敗しました。現在のノートブックに表示されたAPIキーを貼り直し、もう一度実行してください。";
-    if (scope === "job" && status === 404) return "Colabでジョブが見つかりません。セッション再起動で失われた可能性があります。URLとキーを確認し、音声の送信またはノート生成をやり直してください。";
-    if (status === 404) return "Colabの接続先が見つかりません。ノートブックを起動し直し、新しいバックエンドURLを設定してください。";
+    if (status === 503) return "Haas-ja モデルを準備中です。初回は数分かかります。しばらく待ってから再実行してください。";
+    if (scope === "job" && status === 404) return "処理中のジョブが見つかりません。サーバーを再起動した場合は、音声を送り直してください。";
+    if (status === 404) return "サーバーのAPIが見つかりません。`python server.py` で起動したページを開いているか確認してください。";
     if (status === 413) return "音声ファイルが大きすぎて送信できません。短い音声ファイルに分けて選び直してください。";
-    if (status === 422) return "Colabが入力を受け付けませんでした。音声ファイルの形式、またはバックエンドのAPI仕様を確認して再実行してください。";
-    return `Colabで通信エラーが発生しました（HTTP ${status}）。ノートブックが起動しているか確認し、必要なら再実行してURLとキーを更新してください。`;
+    if (status === 422) return "音声ファイルを読み取れませんでした。WAV・MP3 などに変換して再実行してください。";
+    return `ローカルサーバーでエラーが発生しました（HTTP ${status}）。サーバーの画面を確認して再実行してください。`;
+  }
+
+  async function responseDetail(response) {
+    try {
+      const body = await response.json();
+      if (typeof body?.detail === "string" && body.detail.trim()) return body.detail;
+    } catch { /* The body is not JSON. */ }
+    return "";
   }
 
   async function requestJson(url, options = {}, { signal, scope = "job", timeout = 30000 } = {}) {
@@ -291,60 +277,67 @@
         ...options, signal: controller.signal,
       });
       if (!response.ok) {
-        if (scope !== "gemini" && (response.status === 401 || response.status === 403)) {
-          setConnection("error", "Colab 認証失敗");
-          message(ui.connectionMessage, "現在のColabに表示されたAPIキーを設定し直してください。", "error");
-        }
-        throw new UserError(httpError(response.status, scope));
+        const detail = await responseDetail(response);
+        throw new UserError(detail || httpError(response.status, scope));
       }
       let data;
       try { data = await response.json(); }
       catch (error) {
         if (controller.signal.aborted) throw error;
-        throw new UserError(scope === "gemini"
-          ? "Geminiの応答を読み取れませんでした。時間を置いて再実行してください。"
-          : "Colabの応答がJSONではありません。バックエンドURLとトンネルの起動状態を確認してください。");
+        throw new UserError("ローカルサーバーの応答を読み取れませんでした。サーバーの画面を確認してください。");
       }
       if (signal?.aborted) throw new CancelledError();
-      if (!data || typeof data !== "object" || Array.isArray(data)) throw new UserError("処理結果の形式が正しくありません。接続先のAPI仕様を確認し、もう一度実行してください。");
+      if (!data || typeof data !== "object" || Array.isArray(data)) throw new UserError("処理結果の形式が正しくありません。サーバーを再起動して再実行してください。");
       return data;
     } catch (error) {
       if (signal?.aborted) throw new CancelledError();
-      if (timedOut) throw new UserError(scope === "gemini"
-        ? "Geminiからの応答が時間内に届きませんでした。通信状態を確認し、時間を置いて再実行してください。"
-        : "Colabからの応答が時間内に届きませんでした。Colabの画面で処理状況を確認し、接続が切れていれば再起動してURLとキーを更新してください。");
+      if (timedOut) throw new UserError("ローカルサーバーからの応答が時間内に届きませんでした。処理が続いている場合は、しばらく待ってから再実行してください。");
       if (error instanceof UserError) throw error;
-      throw new UserError(scope === "gemini"
-        ? "Geminiへ接続できません。インターネット接続とブラウザの通信制限を確認し、再実行してください。"
-        : "Colabへ接続できません。ノートブックの起動・URL・インターネット接続を確認してください。初回は「Colabの始め方」にある allow_origins の設定も確認してください。");
+      throw new UserError("ローカルサーバーに接続できません。ターミナルで `python server.py` が動いているか確認してください。");
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", cancel);
     }
   }
 
-  async function checkHealth(config, signal) {
-    setConnection("checking", "Colab 確認中");
+  async function checkHealth(signal) {
+    assertServed();
+    setConnection("checking", "サーバー確認中");
+    let data;
     try {
-      const data = await requestJson(`${config.url}/health`, { method: "GET" }, { scope: "health", timeout: 15000, signal });
-      if (data.ok === false || data.model_loaded === false || data.status === "error") throw new UserError("Colabの準備が完了していません。ノートブックでモデル読み込みとAPIサーバー起動を実行してから、もう一度接続テストしてください。");
-      setConnection("connected", "Colab 接続済み");
-      message(ui.connectionMessage, "接続できました。APIキーの認証は処理の開始時に確認します。", "success");
+      data = await requestJson(api("health"), { method: "GET" }, { scope: "health", timeout: 15000, signal });
     } catch (error) {
-      setConnection("error", "Colab 接続未確認");
+      setConnection("error", "サーバー 未接続");
       throw error;
     }
+    state.notesReady = Boolean(data.notes?.ready);
+    updateNoteDescription();
+    if (data.model_error) {
+      setConnection("error", "モデル準備失敗");
+      message(ui.connectionMessage, data.model_error, "error");
+      throw new UserError(data.model_error);
+    }
+    if (data.model_loaded !== true) {
+      setConnection("checking", "モデル準備中");
+      message(ui.connectionMessage, "Haas-ja モデルを読み込み中です。初回は数分かかります。", "working");
+      throw new UserError("Haas-ja モデルを読み込み中です。初回は数分かかります。少し待ってから再実行してください。");
+    }
+    setConnection("connected", "サーバー 接続済み");
+    message(ui.connectionMessage, state.notesReady
+      ? "文字起こしとノート生成を利用できます。"
+      : "文字起こしを利用できます。ノート生成は .env に Gemini APIキーを設定すると使えます。", "success");
+    return data;
   }
 
   async function testConnection() {
     if (state.operation || state.checking) return;
     state.checking = true;
     updateControls();
-    message(ui.connectionMessage, "Colabへの接続を確認しています…", "working");
-    try { await checkHealth(backendConfig(false)); }
+    message(ui.connectionMessage, "ローカルサーバーの状態を確認しています…", "working");
+    try { await checkHealth(); }
     catch (error) {
-      setConnection("error", "Colab 接続できません");
-      message(ui.connectionMessage, userMessage(error, "接続テストに失敗しました。URLを確認して再実行してください。"), "error");
+      const text = userMessage(error, "サーバーの状態を確認できませんでした。");
+      message(ui.connectionMessage, text, text.includes("読み込み中") ? "working" : "error");
     } finally { state.checking = false; updateControls(); }
   }
 
@@ -359,23 +352,23 @@
 
   function jobIdFrom(data) {
     if ((typeof data.job_id !== "string" && typeof data.job_id !== "number") || !String(data.job_id).trim()) {
-      throw new UserError("ColabからジョブIDが返されませんでした。バックエンドの /jobs または /notes の実装を確認し、もう一度実行してください。");
+      throw new UserError("サーバーからジョブIDが返りませんでした。サーバーを再起動して、もう一度実行してください。");
     }
     return encodeURIComponent(String(data.job_id));
   }
 
-  async function pollJob(config, jobId, signal, element, kind) {
+  async function pollJob(jobId, signal, element, kind) {
     const label = kind === "note" ? "ノート生成" : "文字起こし";
     message(element, `${label}の順番を待っています（queued）。このページを開いたままお待ちください。`, "working");
     while (true) {
       await waitForPoll(signal);
-      const data = await requestJson(`${config.url}/jobs/${jobId}`, { method: "GET", headers: { "X-API-Key": config.key } }, { signal, scope: "job" });
+      const data = await requestJson(api(`jobs/${jobId}`), { method: "GET" }, { signal, scope: "job" });
       switch (data.status) {
         case "queued": message(element, `${label}の順番を待っています（queued）。`, "working"); break;
         case "running": message(element, `${label}を実行中です（running）。長い講義は時間がかかります。`, "working"); break;
         case "done": return data;
-        case "error": throw new UserError(`Colabの${label}でエラーが発生しました（error）。ノートブックのエラー表示を確認し、必要なセルを再実行してからやり直してください。`);
-        default: throw new UserError("Colabから認識できない処理状況が返されました。バックエンドのジョブ状態が queued / running / done / error になっているか確認してください。");
+        case "error": throw new UserError(data.error ? `${label}に失敗しました: ${data.error}` : `${label}に失敗しました。サーバーの画面を確認してください。`);
+        default: throw new UserError("サーバーから認識できない処理状況が返りました。サーバーを再起動して再実行してください。");
       }
     }
   }
@@ -413,7 +406,7 @@
   async function decodeBrowserAudio(blob, signal) {
     checkBrowserCancelled(signal);
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass) throw new UserError("このブラウザでは音声をデコードできません。最新版のブラウザで開くか、「Colabバックエンド」へ切り替えてください。");
+    if (!AudioContextClass) throw new UserError("このブラウザでは音声をデコードできません。最新版のブラウザで開くか、「このPCのHaas-ja」へ切り替えてください。");
     let context;
     try {
       context = new AudioContextClass({ sampleRate: 16000 });
@@ -422,7 +415,7 @@
       const decoded = await context.decodeAudioData(bytes);
       checkBrowserCancelled(signal);
       if (!decoded.length || !decoded.numberOfChannels || decoded.sampleRate !== 16000) {
-        throw new UserError("音声を16kHzで読み込めませんでした。別の音声形式（WAV・MP3など）で保存し直すか、「Colabバックエンド」へ切り替えてください。");
+        throw new UserError("音声を16kHzで読み込めませんでした。別の音声形式（WAV・MP3など）で保存し直すか、「このPCのHaas-ja」へ切り替えてください。");
       }
       const mono = new Float32Array(decoded.length);
       for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
@@ -433,7 +426,7 @@
     } catch (error) {
       checkBrowserCancelled(signal);
       if (error instanceof UserError) throw error;
-      throw new UserError("音声ファイルを読み込めませんでした。ブラウザ非対応の形式、ファイルの破損、またはメモリ不足の可能性があります。再生を確認し、WAV・MP3などに変換するか、「Colabバックエンド」へ切り替えてください。");
+      throw new UserError("音声ファイルを読み込めませんでした。ブラウザ非対応の形式、ファイルの破損、またはメモリ不足の可能性があります。再生を確認し、WAV・MP3などに変換するか、「このPCのHaas-ja」へ切り替えてください。");
     } finally {
       if (context) { try { await context.close(); } catch { /* Already closed. */ } }
     }
@@ -573,7 +566,7 @@
         if (!browserASR.mainEngine) {
           let module;
           try { module = await import(ASR_MODULE_URL); }
-          catch { throw new UserError("ブラウザ用の文字起こし処理を読み込めません。HTTPSまたはlocalhostで開き、asr-worker.js が配信されているか確認するか、「Colabバックエンド」へ切り替えてください。"); }
+          catch { throw new UserError("ブラウザ用の文字起こし処理を読み込めません。HTTPSまたはlocalhostで開き、asr-worker.js が配信されているか確認するか、「このPCのHaas-ja」へ切り替えてください。"); }
           browserASR.mainEngine = module.createBrowserASR();
         }
         try { return await browserASR.mainEngine.transcribe(audio, model, { signal, onEvent }); }
@@ -585,16 +578,15 @@
     }
   }
 
-  async function transcribeWithColab(audio, signal) {
-    message(ui.transcribeMessage, "送信前にColabへの接続を確認しています…", "working");
-    const config = backendConfig();
-    await checkHealth(config, signal);
+  async function transcribeWithLocal(audio, signal) {
+    message(ui.transcribeMessage, "文字起こしの前にサーバーの状態を確認しています…", "working");
+    await checkHealth(signal);
     const form = new FormData();
     form.append("file", audio, audio.name || "recording.webm");
-    message(ui.transcribeMessage, "音声を自分のColabへ送信しています…", "working");
-    const submitted = await requestJson(`${config.url}/jobs`, { method: "POST", headers: { "X-API-Key": config.key }, body: form }, { signal, scope: "upload", timeout: 120000 });
-    const data = await pollJob(config, jobIdFrom(submitted), signal, ui.transcribeMessage, "transcribe");
-    return resultText(data, ["transcript", "result", "text"]);
+    message(ui.transcribeMessage, "音声をこのPCのサーバーへ送信しています…", "working");
+    const submitted = await requestJson(api("jobs"), { method: "POST", body: form }, { signal, scope: "upload", timeout: 120000 });
+    const data = await pollJob(jobIdFrom(submitted), signal, ui.transcribeMessage, "transcribe");
+    return resultText(data, ["transcript", "text"]);
   }
 
   async function transcribe() {
@@ -609,7 +601,7 @@
     try {
       const transcript = operation.engine === "browser"
         ? (await transcribeInBrowser(audio, ui.browserAsrModel.value, signal)).text
-        : await transcribeWithColab(audio, signal);
+        : await transcribeWithLocal(audio, signal);
       if (operation.engine === "browser") checkBrowserCancelled(signal);
       if (!transcript.trim()) throw new UserError("処理は完了しましたが本文が空です。音声が入っているか再生して確かめ、再実行してください。解決しない場合は文字起こしエンジンを切り替えてください。");
       ui.transcript.value = transcript;
@@ -623,46 +615,19 @@
     } finally { endOperation(operation); }
   }
 
-  function notePrompt(transcript) {
-    return `${NOTE_PROMPT}\n\n文字起こし:\n${transcript}`;
-  }
-
-  async function geminiNote(transcript, signal) {
-    const key = ui.geminiKey.value.trim();
-    if (!key) throw new UserError("Gemini APIキーが未設定です。「接続・API設定」にキーを入力するか、Colabを選択してください。");
-    const model = ui.geminiModel.value.trim() || DEFAULT_MODEL;
-    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(model)) throw new UserError("Geminiのモデル名の形式が正しくありません。例の gemini-2.5-flash のように、モデル名だけを入力してください。");
+  async function generateNoteWithServer(transcript, title, signal) {
+    message(ui.noteMessage, "サーバーの状態を確認しています…", "working");
+    const health = await requestJson(api("health"), { method: "GET" }, { scope: "health", timeout: 15000, signal });
+    state.notesReady = Boolean(health.notes?.ready);
+    updateNoteDescription();
+    if (!state.notesReady) throw new UserError("Gemini APIキーが未設定です。.env に GEMINI_API_KEY を設定し、サーバーを再起動してください。");
     message(ui.noteMessage, "Geminiに文字起こし全文を送り、ノートを生成しています…", "working");
-    const data = await requestJson(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-      method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({ contents: [{ role: "user", parts: [{ text: notePrompt(transcript) }] }] }),
-    }, { signal, scope: "gemini", timeout: 180000 });
-    const candidate = data.candidates?.[0];
-    if (data.promptFeedback?.blockReason || (candidate?.finishReason && candidate.finishReason !== "STOP")) {
-      throw new UserError("Geminiの出力が制限または途中終了したため、ノートを保存しませんでした。Google側の制限とモデルの入力・出力上限を確認して再実行してください。");
-    }
-    const parts = candidate?.content?.parts;
-    const note = Array.isArray(parts) ? parts.filter((part) => !part.thought && typeof part.text === "string").map((part) => part.text).join("\n") : "";
-    if (!note.trim()) throw new UserError("Geminiからノート本文が返されませんでした。入力内容とGoogle側の利用制限を確認して、もう一度実行してください。");
-    return note;
-  }
-
-  async function colabNote(transcript, title, signal) {
-    const config = backendConfig();
-    message(ui.noteMessage, "Colabへの接続を確認しています…", "working");
-    await checkHealth(config, signal);
-    message(ui.noteMessage, "Colabにノート生成を依頼しています…", "working");
-    // Required fields remain intact; prompt carries the same instructions as Gemini.
-    const data = await requestJson(`${config.url}/notes`, {
-      method: "POST", headers: { "Content-Type": "application/json", "X-API-Key": config.key },
-      body: JSON.stringify({ transcript, title, prompt: notePrompt(transcript) }),
+    const data = await requestJson(api("notes"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ transcript, title }),
     }, { signal, scope: "note", timeout: 180000 });
-    if (data.status === "error") throw new UserError("Colabのノート生成でエラーが発生しました（error）。ノートブックの出力を確認してから再実行してください。");
-    if (typeof data.note === "string" && data.note.trim()) return data.note;
-    const result = await pollJob(config, jobIdFrom(data), signal, ui.noteMessage, "note");
-    const note = resultText(result, ["note", "result"]);
-    if (!note.trim()) throw new UserError("Colabのノート生成は完了しましたが本文が空です（done）。バックエンドの note または result の出力を確認して再実行してください。");
-    return note;
+    if (typeof data.note !== "string" || !data.note.trim()) throw new UserError("ノート生成は完了しましたが本文が空です。もう一度実行してください。");
+    return data.note;
   }
 
   async function generateNote() {
@@ -670,22 +635,19 @@
     if (!transcript.trim()) { message(ui.noteMessage, "文字起こしの本文を用意してからノートを生成してください。", "error"); return; }
     const operation = beginOperation("note");
     if (!operation) return;
-    const engine = ui.noteEngine.value === "auto" ? (ui.geminiKey.value.trim() ? "gemini" : "colab") : ui.noteEngine.value;
     try {
       const title = currentRecord()?.title || `${formatDate(new Date())} ｜ テキスト入力`;
-      const note = engine === "gemini"
-        ? await geminiNote(transcript, operation.controller.signal)
-        : await colabNote(transcript, title, operation.controller.signal);
+      const note = await generateNoteWithServer(transcript, title, operation.controller.signal);
       const record = currentRecord() || createRecord(transcript, "テキスト入力");
       record.transcript = transcript;
       record.note = note;
       showNote(note);
       persistHistory(); renderHistory();
-      message(ui.noteMessage, `${engine === "gemini" ? "Gemini" : "Colab"}でノートを生成しました（done）。履歴に反映しました。コピーやダウンロードで保存できます。`, "success");
+      message(ui.noteMessage, "Geminiでノートを生成しました（done）。履歴に反映しました。コピーやダウンロードで保存できます。", "success");
     } catch (error) {
-      const text = error instanceof CancelledError && engine === "gemini"
+      const text = error instanceof CancelledError
         ? "待機を中止しました。Gemini側の処理が継続し、利用枠が消費される場合があります。再実行前にGoogle側の利用状況を確認してください。"
-        : userMessage(error, "ノートを生成できませんでした。選択したエンジンの設定を確認して再実行してください。");
+        : userMessage(error, "ノートを生成できませんでした。サーバーの状態を確認して再実行してください。");
       message(ui.noteMessage, text, error instanceof CancelledError ? "neutral" : "error");
     } finally { endOperation(operation); }
   }
@@ -868,7 +830,7 @@
       message(ui.noteMessage, "先に文字起こしを用意してください。");
     }
     persistHistory(); renderHistory();
-    message(ui.historyMessage, "このブラウザの履歴から削除しました。ColabやDrive側のファイルはそのまま残ります。", "success");
+    message(ui.historyMessage, "このブラウザの履歴から削除しました。", "success");
   }
 
   async function copyNote() {
@@ -907,11 +869,12 @@
     finally { if (url) setTimeout(() => URL.revokeObjectURL(url), 1000); }
   }
 
-  ui.backendUrl.value = readSetting("rn_backend_url");
-  ui.backendKey.value = readSetting("rn_backend_key");
-  ui.geminiKey.value = readSetting("rn_gemini_key");
-  ui.geminiModel.value = readSetting("rn_gemini_model", DEFAULT_MODEL) || DEFAULT_MODEL;
-  ui.asrEngine.value = readSetting("rn_asr_engine", "browser") === "colab" ? "colab" : "browser";
+  // Colab-era settings are no longer used. Remove stored URLs and keys.
+  for (const key of ["rn_backend_url", "rn_backend_key", "rn_gemini_key", "rn_gemini_model"]) {
+    try { localStorage.removeItem(key); } catch { /* Storage may be unavailable. */ }
+  }
+  const savedEngine = readSetting("rn_asr_engine", "browser");
+  ui.asrEngine.value = savedEngine === "local" || savedEngine === "colab" ? "local" : "browser";
   const savedBrowserModel = readSetting("rn_browser_asr_model", DEFAULT_BROWSER_MODEL);
   ui.browserAsrModel.value = BROWSER_MODELS.has(savedBrowserModel) ? savedBrowserModel : DEFAULT_BROWSER_MODEL;
   ui.asrEngine.addEventListener("change", () => { saveSetting("rn_asr_engine", ui.asrEngine.value); updateAsrDescription(); });
@@ -921,16 +884,6 @@
     // No operation is active while this control is enabled.
     void browserASR.mainEngine?.dispose();
     message(ui.browserAsrStatus, ""); updateAsrDescription();
-  });
-  for (const [input, key] of [[ui.backendUrl, "rn_backend_url"], [ui.backendKey, "rn_backend_key"], [ui.geminiKey, "rn_gemini_key"], [ui.geminiModel, "rn_gemini_model"]]) {
-    input.addEventListener("input", () => {
-      saveSetting(key, input.value.trim());
-      if (input === ui.backendUrl || input === ui.backendKey) resetConnection();
-      updateEngineDescription();
-    });
-  }
-  ui.geminiModel.addEventListener("change", () => {
-    if (!ui.geminiModel.value.trim()) { ui.geminiModel.value = DEFAULT_MODEL; saveSetting("rn_gemini_model", DEFAULT_MODEL); }
   });
   ui.testConnection.addEventListener("click", testConnection);
   ui.recordStart.addEventListener("click", startRecording);
@@ -945,7 +898,6 @@
   });
   ui.transcribeStart.addEventListener("click", transcribe);
   ui.generateNote.addEventListener("click", generateNote);
-  ui.noteEngine.addEventListener("change", updateEngineDescription);
   for (const button of [ui.transcribeCancel, ui.noteCancel]) button.addEventListener("click", () => state.operation?.controller.abort());
   ui.copyNote.addEventListener("click", copyNote);
   ui.downloadNote.addEventListener("click", downloadNote);
@@ -977,11 +929,12 @@
   });
 
   loadHistory();
-  setConnection("idle", ui.backendUrl.value.trim() ? "Colab 未確認" : "Colab 未設定");
-  if (location.protocol === "http:" || location.protocol === "https:") {
-    ui.corsExample.textContent = `allow_origins=[${JSON.stringify(location.origin)}]`;
-  } else {
-    ui.corsExample.textContent = "まずGitHub Pagesまたはlocalhostでこのサイトを開き、ここに表示される設定をColabへコピーしてください。";
-  }
+  setConnection("idle", "サーバー 未確認");
   renderHistory();
+  if (location.protocol === "http:" || location.protocol === "https:") {
+    checkHealth().catch(() => { /* The status card shows the error. */ });
+  } else {
+    setConnection("error", "サーバー 未接続");
+    message(ui.connectionMessage, "このページはローカルサーバーから開いてください。`python server.py` を実行し、http://127.0.0.1:8000 を開きます。", "error");
+  }
 })();

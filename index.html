@@ -3,9 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="ブラウザ内のWebGPUで講義を文字起こし。音声を端末の外へ送らず、履歴に保存して学習ノートにまとめるRecordingNoteの静的版です。Colabにも対応。">
+  <meta name="description" content="講義をブラウザまたはこのPCのHaas-jaで文字起こしし、Geminiで学習ノートにまとめるRecordingNoteのローカル版です。">
   <meta name="referrer" content="no-referrer">
-  <title>RecordingNote — ブラウザ文字起こし・静的版</title>
+  <title>RecordingNote — ローカル文字起こし</title>
   <link rel="stylesheet" href="./styles.css">
   <script src="./app.js" defer></script>
 </head>
@@ -15,9 +15,9 @@
     <div class="header-inner">
       <a class="brand" href="#main" aria-label="RecordingNote ホーム">
         <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M8 4h8v16H8zM5 8v8M19 8v8M11 8h2m-2 4h2m-2 4h2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-        <span><span class="brand-name">Recording<span>Note</span></span><span class="brand-caption">ブラウザ文字起こし・静的版</span></span>
+        <span><span class="brand-name">Recording<span>Note</span></span><span class="brand-caption">ローカル文字起こし</span></span>
       </a>
-      <div id="connection-status" class="connection-status" data-state="idle" role="status"><span class="status-dot" aria-hidden="true"></span><span id="connection-label">Colab 未設定</span></div>
+      <div id="connection-status" class="connection-status" data-state="idle" role="status"><span class="status-dot" aria-hidden="true"></span><span id="connection-label">サーバー 未確認</span></div>
     </div>
   </header>
 
@@ -37,26 +37,15 @@
     <p id="storage-warning" class="notice warning-notice" role="alert" hidden></p>
 
     <details id="settings" class="card settings-card" open>
-      <summary><span class="section-number">01</span><span class="summary-title">接続・API設定<small>Colab利用・AIノート生成用</small></span><span class="summary-chevron" aria-hidden="true">⌄</span></summary>
+      <summary><span class="section-number">01</span><span class="summary-title">ローカルサーバー<small>文字起こし・ノート生成</small></span><span class="summary-chevron" aria-hidden="true">⌄</span></summary>
       <div class="settings-content">
         <div class="settings-group">
-          <h2>Colab バックエンド <span class="optional-label">任意</span></h2>
-          <div class="settings-grid">
-            <label for="backend-url">バックエンド URL<input id="backend-url" type="text" inputmode="url" placeholder="Colabに表示された https://… を貼り付け" autocomplete="off" autocapitalize="off" spellcheck="false" aria-describedby="backend-help"></label>
-            <label for="backend-key">API キー<input id="backend-key" type="password" placeholder="Colabに表示されたAPIキー" autocomplete="off" spellcheck="false"></label>
-          </div>
-          <div class="settings-actions"><button id="test-connection" type="button" class="button secondary">接続テスト <span aria-hidden="true">↗</span></button><p id="connection-message" class="status-text" role="status">Colabを起動し、URLとAPIキーを入力してください。</p></div>
-          <p id="backend-help" class="help-text">ブラウザ方式の文字起こしには設定不要です。Colab方式を使う場合はURLとキーを入力し、URLが変わったら更新してください。</p>
+          <h2>このPCのサーバー</h2>
+          <div class="settings-actions"><button id="test-connection" type="button" class="button secondary">状態を再確認 <span aria-hidden="true">↗</span></button><p id="connection-message" class="status-text" role="status">サーバーの状態を確認しています。</p></div>
+          <p class="help-text">文字起こしは、このPCで動く Haas-ja-v1.0 が担当します。ターミナルで <code>./start.sh</code> を実行し、表示された <code>http://127.0.0.1:8000</code> を開いてください。URLやAPIキーの入力はありません。</p>
         </div>
-        <div class="settings-group gemini-settings">
-          <h2>Gemini <span class="optional-label">ノート生成用・任意</span></h2>
-          <div class="settings-grid">
-            <label for="gemini-key">Gemini API キー<input id="gemini-key" type="password" placeholder="Geminiを使う場合のみ入力" autocomplete="off" spellcheck="false"></label>
-            <label for="gemini-model">モデル名<input id="gemini-model" type="text" value="gemini-2.5-flash" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
-          </div>
-        </div>
-        <div class="privacy-note"><span class="privacy-icon" aria-hidden="true">▣</span><div><p>キーはこのブラウザにだけ保存され、サーバーには送信されません</p><small>保存先としてのサイトのサーバーはありません。処理時の認証に限り、Colab用キーは指定のバックエンドへ、Gemini用キーはGoogleのAPIへ送信します。</small></div></div>
-        <p id="settings-save-status" class="help-text" role="status">設定は入力すると自動保存されます。</p>
+        <div class="privacy-note"><span class="privacy-icon" aria-hidden="true">▣</span><div><p>音声と文字起こしは、このPCの中だけで処理されます</p><small>ノート生成でGeminiを使う場合だけ、文字起こし全文をGoogleへ送ります。GeminiのAPIキーはサーバーの .env に保存され、ブラウザには保存しません。</small></div></div>
+        <p id="settings-save-status" class="help-text" role="status">選択した内容はこのブラウザに保存されます。</p>
       </div>
     </details>
 
@@ -71,15 +60,16 @@
       </div>
       <p id="audio-message" class="status-text" role="status">音声を用意すると、文字起こしを開始できます。</p>
       <div id="audio-preview-container" class="audio-preview" hidden><p id="audio-name" class="audio-name"></p><audio id="audio-preview" controls preload="metadata" aria-label="用意した音声のプレビュー"></audio></div>
-      <p class="help-text">ブラウザ方式では音声は端末の外に出ません。Colab方式を選んだ場合だけ、開始時に自分のColabへ送信します。音声自体はブラウザの履歴には保存しません。</p>
+      <p class="help-text">ブラウザ方式では音声は端末の外に出ません。「このPCのHaas-ja」を選んだ場合だけ、開始時にこのPCのサーバーへ送信します。音声自体は履歴には保存しません。</p>
     </section>
 
     <div class="document-heading"><div><p class="eyebrow">学びのワークスペース</p><p id="current-title">新しいノート</p></div><a href="#history-section" class="text-link">保存した履歴を見る <span aria-hidden="true">↓</span></a></div>
     <div class="results-grid">
       <section id="transcription-section" class="card result-card" aria-labelledby="transcription-heading">
-        <div class="section-heading"><span class="section-number">03</span><div><h2 id="transcription-heading">文字起こし</h2><p>ブラウザ内推論 / Colab</p></div><span id="transcript-count" class="count">0文字</span></div>
-        <label for="asr-engine" class="engine-label">文字起こしエンジン<select id="asr-engine" aria-describedby="asr-description"><option value="browser" selected>ブラウザで文字起こし（推奨）</option><option value="colab">Colabバックエンド</option></select></label>
-        <p id="asr-description" class="help-text asr-help">音声は端末の外へ送らず、このブラウザで文字起こしします。Colabの設定は不要です。</p>
+        <div class="section-heading"><span class="section-number">03</span><div><h2 id="transcription-heading">文字起こし</h2><p>ブラウザ内推論 / このPCのHaas-ja</p></div><span id="transcript-count" class="count">0文字</span></div>
+        <label for="asr-engine" class="engine-label">文字起こしエンジン<select id="asr-engine" aria-describedby="asr-description"><option value="browser" selected>ブラウザで文字起こし（推奨）</option><option value="local">このPCのHaas-ja</option></select></label>
+        <p id="asr-description" class="help-text asr-help">音声は端末の外へ送らず、このブラウザで文字起こしします。サーバーの設定は不要です。</p>
+        <p id="local-asr-help" class="help-text asr-help" hidden>Haas-ja-v1.0 は Linux と NVIDIA GPU（CUDA）が必要です。初回はモデル（約1.2GB）を取得して読み込みます。</p>
         <div id="browser-asr-options" class="browser-asr-options">
           <label for="browser-asr-model" class="engine-label">ブラウザ用モデル<select id="browser-asr-model" aria-describedby="browser-asr-download"><option value="onnx-community/whisper-large-v3-turbo-ONNX" selected>Whisper large-v3-turbo／高速・推奨</option><option value="onnx-community/kotoba-whisper-v2.2-ONNX">Kotoba-Whisper v2.2／日本語特化</option></select></label>
           <p id="browser-asr-download" class="help-text asr-help">初回はモデルのダウンロード（約1GB前後）が必要です。2回目以降はキャッシュから読み込みます。容量はモデルや再試行の構成によって増減し、サイトデータの削除などで再ダウンロードが必要になる場合があります。</p>
@@ -95,15 +85,14 @@
 
       <section id="note-section" class="card result-card" aria-labelledby="note-heading">
         <div class="section-heading"><span class="section-number">04</span><div><h2 id="note-heading">AIノート生成</h2><p>文字起こしに沿った学習ノート</p></div><span class="tag blue-tag">Markdown</span></div>
-        <label for="note-engine" class="engine-label">生成エンジン<select id="note-engine"><option value="auto">自動（GeminiキーがあればGemini、無ければColab）</option><option value="gemini">Gemini</option><option value="colab">Colab</option></select></label>
-        <p id="engine-description" class="help-text">自動選択：Colabを使います。</p>
+        <p id="note-provider-status" class="help-text">ノート生成：Gemini APIキーの設定を確認しています。</p>
         <div id="note-empty" class="note-empty"><span class="empty-note-icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="M13 7h16l8 8v26H13zM29 7v9h8M19 23h12M19 29h12M19 35h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><h3>講義の要点を、読み返せる形に。</h3><p>文字起こしをもとに、見出し・重要語句・<br>復習ポイントをまとめます。</p></div>
         <article id="note-output" class="markdown-body" aria-label="生成した学習ノート" hidden></article>
         <div class="note-export"><button id="copy-note" type="button" class="button small secondary" disabled>Markdownをコピー</button><button id="download-note" type="button" class="button small secondary" disabled>.mdでダウンロード</button></div>
         <div class="result-actions"><button id="generate-note" type="button" class="button primary" disabled>AIノートを生成 <span aria-hidden="true">→</span></button><button id="note-cancel" type="button" class="button quiet" hidden>待機を中止</button></div>
         <progress id="note-progress" class="job-progress" aria-label="AIノートの処理中" hidden></progress>
         <p id="note-message" class="status-text result-status" role="status">先に文字起こしを用意してください。</p>
-        <p class="help-text">付属Colabは文字起こし専用です。ノート生成にはGeminiキー、または /notes 対応のバックエンドが必要です。</p>
+        <p class="help-text">ノート生成は、このPCのサーバー経由で Gemini API を使います。APIキーは .env に設定します。</p>
       </section>
     </div>
 
@@ -119,20 +108,20 @@
       <div class="section-heading"><span class="section-number">06</span><div><h2 id="guide-heading">使い方ガイド</h2><p>まずはブラウザ方式で、録音・ファイル選択から始められます。</p></div></div>
       <div class="guide-notices browser-guide">
         <h3>ブラウザ方式（推奨）</h3>
-        <p>「ブラウザで文字起こし」を選び、音声を用意して「文字起こし開始」を押します。ColabのURL・APIキーは不要です。初回だけモデルをダウンロードし、ブラウザにキャッシュします（約1GB前後、構成により増減）。2回目以降はキャッシュを使いますが、サイトデータの削除や容量不足で再取得する場合があります。</p>
-        <p>文字起こし中、音声は端末の外に出ません。WebGPUで処理し、利用できない場合はWASM（CPU）で再試行します。PCが非力な場合やブラウザで動かない場合は、下の手順でColabを起動し、文字起こしエンジンを「Colabバックエンド」に切り替えてください。</p>
-        <p>AIノート生成は別の処理です。Geminiまたは対応Colabへ文字起こし本文を送るため、利用するエンジンの設定が必要です。</p>
+        <p>「ブラウザで文字起こし」を選び、音声を用意して「文字起こし開始」を押します。サーバーの設定は不要です。初回だけモデルをダウンロードし、ブラウザにキャッシュします（約1GB前後、構成により増減）。2回目以降はキャッシュを使いますが、サイトデータの削除や容量不足で再取得する場合があります。</p>
+        <p>文字起こし中、音声は端末の外に出ません。WebGPUで処理し、利用できない場合はWASM（CPU）で再試行します。PCが非力な場合やブラウザで動かない場合は、下の手順でローカルサーバーを起動し、文字起こしエンジンを「このPCのHaas-ja」に切り替えてください。</p>
+        <p>AIノート生成は別の処理です。文字起こし本文を、このPCのサーバー経由でGeminiへ送ります。</p>
       </div>
-      <h3 class="colab-guide-heading">Colabの始め方（代替方式）</h3>
+      <h3 class="local-guide-heading">このPCのHaas-jaを使う</h3>
       <ol class="guide-steps">
-        <li><div><h3>ノートブックをダウンロード</h3><p>このページのバックエンド用ファイルを保存します。</p><a href="./recordingnote-colab-backend.ipynb" class="button secondary small" download>ノートブックをダウンロード <span aria-hidden="true">↓</span></a></div></li>
-        <li><div><h3>Google Colabで開いて「すべて実行」</h3><p><a href="https://colab.research.google.com/" target="_blank" rel="noopener noreferrer">Google Colabを開く ↗</a> →「ノートブックをアップロード」。GPUランタイムを選び、下の接続許可設定を変更してから「すべて実行」します。導入セルに再起動の案内が出たら、その案内に従ってください。</p></div></li>
-        <li><div><h3>バックエンドURLとAPIキーを貼り付け</h3><p>Colabに表示された2つの値を、上の「接続・API設定」に入力します。ペアリングコードは空欄のままEnterで進められます。</p></div></li>
-        <li><div><h3>接続テストで確認</h3><p>「接続テスト」で接続を確認したら、録音またはファイル選択から始められます。</p><a href="#settings" class="text-link">設定へ戻る ↑</a></div></li>
+        <li><div><h3>必要なものを用意</h3><p>Linux と NVIDIA GPU（CUDA）、Python 3.11 以上。Haas-ja-v1.0 は Windows と macOS では動きません。</p></div></li>
+        <li><div><h3>セットアップと起動</h3><p>プロジェクト直下で <code>./start.sh</code> を実行します。初回だけ依存関係を導入し、<code>.env</code> を作ってサーバーを起動します。</p></div></li>
+        <li><div><h3>ページを開く</h3><p>表示された <code>http://127.0.0.1:8000</code> をブラウザで開きます。初回はモデル（約1.2GB）の取得に数分かかります。</p></div></li>
+        <li><div><h3>エンジンを切り替えて開始</h3><p>「このPCのHaas-ja」を選び、録音または音声ファイルから文字起こしを始めます。</p><a href="#settings" class="text-link">サーバーの状態を見る ↑</a></div></li>
       </ol>
-      <div class="guide-notices"><p><strong>無料枠のColabはアイドルで切断されるため、使うたびに実行が必要です。</strong><br>切断後はノートブックを再実行し、新しく表示されたURLとキーに更新してください。</p><details class="cors-guide" open><summary>初回に必要：このページからの接続を許可する</summary><p>付属ノートブックは元のファイルのコピーです。APIサーバー起動セルの <code>allow_origins</code> を、次の表示に置き換えてから実行してください。</p><pre><code id="cors-example">allow_origins=['このページのオリジン（https://ドメイン名）']</code></pre><p>オリジンには末尾のスラッシュやリポジトリ名などのパスを含めません。変更後に起動済みサーバーへ反映するにはセッションを再起動し、ノートブック内の再起動後の手順に従って実行し直します。</p></details><p>インストール後はColabの「セッションを再起動」を行い、GPU確認・Driveマウント → モデル読み込み → 文字起こし関数 → APIサーバー起動の順に実行します。詳しくは<a href="./README.md">README</a>を参照してください。</p></div>
+      <div class="guide-notices"><p><strong>ノート生成を使うには Gemini APIキーが必要です。</strong><br><code>.env</code> の <code>GEMINI_API_KEY</code> にキーを設定し、サーバーを再起動してください。詳しくは<a href="./README.md">README</a>を参照してください。</p></div>
     </section>
-    <footer class="site-footer"><span>RecordingNote <span class="footer-dot" aria-hidden="true">·</span> あなたの学びを、手元に。</span><span>静的サイト / 履歴はブラウザ内に保存</span></footer>
+    <footer class="site-footer"><span>RecordingNote <span class="footer-dot" aria-hidden="true">·</span> あなたの学びを、手元に。</span><span>ローカル版 / 履歴はブラウザ内に保存</span></footer>
   </main>
 </body>
 </html>
