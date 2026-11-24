@@ -47,13 +47,22 @@
       </div>
       <p id="audio-message" class="status-text" role="status">音声を用意すると、文字起こしを開始できます。</p>
       <div id="audio-preview-container" class="audio-preview" hidden><p id="audio-name" class="audio-name"></p><audio id="audio-preview" controls preload="metadata" aria-label="用意した音声のプレビュー"></audio></div>
-      <p class="help-text">音声はこのブラウザの中だけで文字起こしします。外部サーバーへ音声を送信しません。</p>
+      <p id="audio-privacy-note" class="help-text">音声はこのブラウザの中だけで文字起こしします。外部サーバーへ音声を送信しません。</p>
     </section>
 
     <div class="document-heading"><div><p class="eyebrow">学びのワークスペース</p><p id="current-title">新しいノート</p></div><a href="#history-section" class="text-link">保存した履歴を見る <span aria-hidden="true">↓</span></a></div>
     <div class="results-grid">
       <section id="transcription-section" class="card result-card" aria-labelledby="transcription-heading">
-        <div class="section-heading"><span class="section-number">02</span><div><h2 id="transcription-heading">文字起こし</h2><p>ブラウザ内 Haas-ja-v1.0（WebGPU / WASM）</p></div><span id="transcript-count" class="count">0文字</span></div>
+        <div class="section-heading"><span class="section-number">02</span><div><h2 id="transcription-heading">文字起こし</h2><p id="transcription-subtitle">ブラウザ内 Haas-ja-v1.0（WebGPU / WASM）</p></div><span id="transcript-count" class="count">0文字</span></div>
+        <p id="groq-provider-status" class="help-text" hidden></p>
+        <details id="groq-settings" class="inline-settings" hidden>
+          <summary>Groq APIキーを設定（モバイル用）<span class="summary-chevron" aria-hidden="true">⌄</span></summary>
+          <div class="inline-settings-body">
+            <label for="groq-key">Groq APIキー<input id="groq-key" type="password" placeholder="gsk_…（このブラウザにのみ保存）" autocomplete="off" spellcheck="false"></label>
+            <label for="groq-model">モデル名<input id="groq-model" type="text" value="whisper-large-v3-turbo" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+            <p class="help-text">キーはこのブラウザの localStorage にのみ保存され、Groq API 以外へは送信しません。</p>
+          </div>
+        </details>
         <label class="sr-only" for="transcript">文字起こしの本文（編集可能）</label>
         <textarea id="transcript" class="transcript-editor" placeholder="文字起こしがここに表示されます。誤認識は編集してからノートにまとめられます。本文を直接貼り付けることもできます。" spellcheck="false"></textarea>
         <div class="transcript-tools">
@@ -98,7 +107,7 @@
       <div class="section-heading"><span class="section-number">05</span><div><h2 id="guide-heading">使い方ガイド</h2><p>アプリのインストール不要で、ブラウザだけで使えます。</p></div></div>
       <ol class="guide-steps">
         <li><div><h3>音声を用意</h3><p>このページでそのまま録音するか、手元の音声ファイル（M4A / MP3 / WAV など）を選びます。</p></div></li>
-        <li><div><h3>ブラウザ内 Haas-ja で文字起こし</h3><p>「文字起こし開始」を押すと、初回だけモデル（約363 MB）を自動取得してブラウザにキャッシュし、あなたの PC 上で推論します。音声は端末の外に出ません。</p></div></li>
+        <li><div><h3>PC・スマホに応じた文字起こし</h3><p>PC はブラウザ内の Haas-ja-v1.0（初回約363 MBキャッシュ・音声は端末外へ出ません）で処理します。スマホ・タブレットはメモリ負荷を避けるため Groq API で高速に文字起こしします（後から <code>groq-asr.js</code> に中継 API を設定すればキー入力不要になります）。</p></div></li>
         <li><div><h3>Gemini API で AIノート作成（任意）</h3><p>今は「Gemini APIキーを設定（任意）」にキーを入れてすぐ試せます。後からサイト側設定（<code>gemini-note.js</code>）に中継 API を組み込めば、利用者のキー入力も不要になります。</p></div></li>
       </ol>
       <div class="guide-notices"><p>2回目以降の文字起こしはブラウザのキャッシュを使うため、モデルを再ダウンロードせずに動きます。詳しくは <a href="./README.md">README</a> を参照してください。</p></div>

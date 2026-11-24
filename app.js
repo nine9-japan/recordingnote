@@ -1,6 +1,14 @@
 import { NOTE_CONFIG, NoteApiError, generateNoteWithGemini, isEndpointConfigured } from "./gemini-note.js";
+import {
+  GROQ_CONFIG,
+  GroqApiError,
+  isGroqEndpointConfigured,
+  resolveAsrMode,
+  transcribeWithGroq,
+} from "./groq-asr.js";
 
 const HAAS_WORKER_URL = new URL("./haas-worker.js", import.meta.url).href;
+const asrMode = resolveAsrMode();
 const $ = (id) => document.getElementById(id);
 const ui = {
   modelStatus: $("model-status"),
@@ -16,7 +24,13 @@ const ui = {
   audioPreview: $("audio-preview"),
   audioPreviewContainer: $("audio-preview-container"),
   audioName: $("audio-name"),
+  audioPrivacyNote: $("audio-privacy-note"),
   currentTitle: $("current-title"),
+  transcriptionSubtitle: $("transcription-subtitle"),
+  groqProviderStatus: $("groq-provider-status"),
+  groqSettings: $("groq-settings"),
+  groqKey: $("groq-key"),
+  groqModel: $("groq-model"),
   transcript: $("transcript"),
   transcriptCount: $("transcript-count"),
   copyTranscript: $("copy-transcript"),
@@ -291,6 +305,47 @@ function updateNoteDescription() {
     : "ノート生成：Gemini APIキー未設定（使う場合は下から設定できます）";
 }
 
+function syncGroqIdleStatus() {
+  if (asrMode !== "groq") return;
+  if (isGroqEndpointConfigured(GROQ_CONFIG)) {
+    setModelStatus("connected", "Groq API 接続済み");
+    return;
+  }
+  if (!GROQ_CONFIG.allowUserApiKey) {
+    setModelStatus("idle", "Groq API 準備中");
+    return;
+  }
+  const hasKey = Boolean(ui.groqKey.value.trim());
+  setModelStatus(hasKey ? "connected" : "idle", hasKey ? "Groq API 準備完了" : "Groq API 未設定");
+}
+
+function updateAsrModeUI() {
+  if (asrMode === "groq") {
+    ui.transcriptionSubtitle.textContent = "Groq API（モバイル向け・高速）";
+    ui.audioPrivacyNote.textContent =
+      "モバイル環境では文字起こしのため、音声を Groq API（または中継サーバー）へ送信します。音声自体は履歴に保存しません。";
+    ui.groqProviderStatus.hidden = false;
+    if (isGroqEndpointConfigured(GROQ_CONFIG)) {
+      ui.groqSettings.hidden = true;
+      ui.groqProviderStatus.textContent = "文字起こし：Groq API（接続済み）";
+    } else if (!GROQ_CONFIG.allowUserApiKey) {
+      ui.groqSettings.hidden = true;
+      ui.groqProviderStatus.textContent = "文字起こし：Groq API 準備中";
+    } else {
+      ui.groqSettings.hidden = false;
+      ui.groqProviderStatus.textContent = ui.groqKey.value.trim()
+        ? "文字起こし：Groq API（キー設定済み・モバイル用）"
+        : "文字起こし：Groq APIキー未設定（使う場合は下から設定できます）";
+    }
+    return;
+  }
+
+  ui.transcriptionSubtitle.textContent = "ブラウザ内 Haas-ja-v1.0（WebGPU / WASM）";
+  ui.audioPrivacyNote.textContent = "音声はこのブラウザの中だけで文字起こしします。外部サーバーへ音声を送信しません。";
+  ui.groqProviderStatus.hidden = true;
+  ui.groqSettings.hidden = true;
+}
+
 function updateControls() {
   const busy = Boolean(state.operation);
   const audioLocked = busy || state.starting || state.recording;
@@ -303,6 +358,8 @@ function updateControls() {
   ui.copyTranscript.disabled = !ui.transcript.value.trim();
   ui.copyNote.disabled = !state.note.trim();
   ui.downloadNote.disabled = !state.note.trim();
+  ui.groqKey.disabled = busy;
+  ui.groqModel.disabled = busy;
   ui.geminiKey.disabled = busy;
   ui.geminiModel.disabled = busy;
 
@@ -316,11 +373,12 @@ function updateControls() {
   ui.generateNote.textContent = noting ? "ノート生成中…" : "AIノートを生成 →";
   ui.transcriptCount.textContent = `${ui.transcript.value.length.toLocaleString("ja-JP")}文字`;
   for (const button of ui.historyList.querySelectorAll("button")) button.disabled = audioLocked;
+  updateAsrModeUI();
   updateNoteDescription();
 }
 
 function userMessage(error, fallback) {
-  if (error instanceof UserError || error instanceof NoteApiError) return error.message;
+  if (error instanceof UserError || error instanceof NoteApiError || error instanceof GroqApiError) return error.message;
   return fallback;
 }
 
@@ -592,6 +650,52 @@ async function transcribe() {
   ui.transcribeProgress.removeAttribute("value");
 
   try {
+    if (asrMode === "groq") {
+      message(ui.haasNotice, "");
+      ui.haasNotice.hidden = true;
+      const result = await transcribeWithGroq({
+        audio,
+        apiKey: ui.groqKey.value,
+        model: ui.groqModel.value,
+        signal,
+        decodeAudioTo16kMono,
+        onProgress: ({ phase, index, total }) => {
+          if (signal.aborted) return;
+          if (phase === "splitting") {
+            ui.transcribeProgress.removeAttribute("value");
+            setModelStatus("checking", "音声を分割中");
+            message(ui.transcribeMessage, "20 MB を超える音声を Groq 送信用に分割しています…", "working");
+          } else if (phase === "uploading") {
+            if (total > 1) {
+              ui.transcribeProgress.max = 100;
+              ui.transcribeProgress.value = Math.round(((index - 1) / total) * 100);
+              message(ui.transcribeMessage, `Groq API で文字起こし中：区間 ${index} / ${total}…`, "working");
+            } else {
+              ui.transcribeProgress.removeAttribute("value");
+              message(ui.transcribeMessage, "Groq API へ音声を送り、文字起こししています…", "working");
+            }
+            setModelStatus("checking", "Groq API 処理中");
+          }
+        },
+      });
+      if (signal.aborted) throw new CancelledError("文字起こしを中止しました。これまでの本文とノートは保持しています。");
+      const transcript = result?.text || "";
+      if (!transcript.trim()) {
+        throw new UserError("処理は完了しましたが発話が検出されませんでした。音声が入っているか再生して確かめ、再実行してください。");
+      }
+      setModelStatus("connected", "Groq API 完了");
+      ui.transcribeProgress.max = 100;
+      ui.transcribeProgress.value = 100;
+      ui.transcript.value = transcript;
+      createRecord(transcript, label);
+      showNote("");
+      persistHistory();
+      renderHistory();
+      message(ui.transcribeMessage, "Groq API で文字起こしが完了しました。履歴に追加しました。", "success");
+      message(ui.noteMessage, "文字起こしを確認したら「AIノートを生成」を押すか、本文をコピーできます。");
+      return;
+    }
+
     const result = await transcribeWithHaas(audio, signal);
     checkCancelled(signal);
     const transcript = result?.text || "";
@@ -610,12 +714,23 @@ async function transcribe() {
     message(ui.transcribeMessage, `Haas-ja（${deviceLabel}）で文字起こしが完了しました。履歴に追加しました。`, "success");
     message(ui.noteMessage, "文字起こしを確認したら「AIノートを生成」を押すか、本文をコピーできます。");
   } catch (error) {
-    if (error instanceof CancelledError) {
-      setModelStatus("idle", "Haas-ja 待機中");
-      message(ui.transcribeMessage, error.message, "neutral");
+    if (error?.name === "AbortError" || error instanceof CancelledError) {
+      if (asrMode === "groq") syncGroqIdleStatus();
+      else setModelStatus("idle", "Haas-ja 待機中");
+      message(
+        ui.transcribeMessage,
+        error instanceof CancelledError ? error.message : "文字起こしを中止しました。これまでの本文とノートは保持しています。",
+        "neutral",
+      );
     } else {
-      setModelStatus("error", "Haas-ja エラー");
-      message(ui.transcribeMessage, userMessage(error, "文字起こしを完了できませんでした。ブラウザの空きメモリと通信状態を確認して再実行してください。"), "error");
+      if (error instanceof GroqApiError && error.code === "missing_key" && !ui.groqSettings.hidden) {
+        ui.groqSettings.open = true;
+        ui.groqKey.focus({ preventScroll: false });
+        syncGroqIdleStatus();
+      } else {
+        setModelStatus("error", asrMode === "groq" ? "Groq API エラー" : "Haas-ja エラー");
+      }
+      message(ui.transcribeMessage, userMessage(error, "文字起こしを完了できませんでした。通信状態と音声を確認して再実行してください。"), "error");
     }
   } finally {
     endOperation(operation);
@@ -691,7 +806,10 @@ function setAudio(file, label) {
   const size = file.size >= 1024 * 1024 ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`;
   ui.audioName.textContent = `${label} · ${size}`;
   message(ui.audioMessage, "音声を用意しました。再生して確認したら「文字起こし開始」を押してください。", "success");
-  message(ui.transcribeMessage, "用意した音声をこのブラウザ内の Haas-ja で文字起こしできます。");
+  message(
+    ui.transcribeMessage,
+    `用意した音声を ${asrMode === "groq" ? "Groq API" : "このブラウザ内の Haas-ja"} で文字起こしできます。`,
+  );
   updateControls();
 }
 
@@ -958,7 +1076,7 @@ function downloadNote() {
   }
 }
 
-// Clean up obsolete client-side settings from earlier versions while preserving history and Gemini key.
+// Clean up obsolete client-side settings from earlier versions while preserving history and API keys.
 for (const key of ["rn_backend_url", "rn_backend_key", "rn_asr_engine", "rn_browser_asr_model"]) {
   try {
     localStorage.removeItem(key);
@@ -966,6 +1084,17 @@ for (const key of ["rn_backend_url", "rn_backend_key", "rn_asr_engine", "rn_brow
     /* Storage may be unavailable. */
   }
 }
+
+ui.groqKey.value = readSetting("rn_groq_key", "");
+ui.groqModel.value = readSetting("rn_groq_model", GROQ_CONFIG.defaultModel) || GROQ_CONFIG.defaultModel;
+ui.groqKey.addEventListener("input", () => {
+  saveSetting("rn_groq_key", ui.groqKey.value.trim());
+  updateAsrModeUI();
+  if (!state.operation) syncGroqIdleStatus();
+});
+ui.groqModel.addEventListener("input", () => {
+  saveSetting("rn_groq_model", ui.groqModel.value.trim() || GROQ_CONFIG.defaultModel);
+});
 
 ui.geminiKey.value = readSetting("rn_gemini_key", "");
 ui.geminiModel.value = readSetting("rn_gemini_model", NOTE_CONFIG.defaultModel) || NOTE_CONFIG.defaultModel;
@@ -1043,5 +1172,9 @@ window.addEventListener("pagehide", (event) => {
 });
 
 loadHistory();
-setModelStatus("idle", "Haas-ja 待機中");
+if (asrMode === "groq") {
+  syncGroqIdleStatus();
+} else {
+  setModelStatus("idle", "Haas-ja 待機中");
+}
 renderHistory();
