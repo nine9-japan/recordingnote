@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="講義の音声をこのPCのHaas-ja-v1.0で文字起こしし、Gemini APIで学習ノートにまとめるRecordingNoteのローカル版です。">
+  <meta name="description" content="講義の音声をこのブラウザ内のHaas-ja-v1.0で文字起こしし、Gemini APIで学習ノートにまとめるRecordingNoteの静的サイト版です。">
   <meta name="referrer" content="no-referrer">
-  <title>RecordingNote — ローカル版</title>
+  <title>RecordingNote — ブラウザ内 Haas-ja 文字起こし</title>
   <link rel="stylesheet" href="./styles.css">
-  <script src="./app.js" defer></script>
+  <script type="module" src="./app.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">本文へ移動</a>
@@ -15,15 +15,15 @@
     <div class="header-inner">
       <a class="brand" href="#main" aria-label="RecordingNote ホーム">
         <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M8 4h8v16H8zM5 8v8M19 8v8M11 8h2m-2 4h2m-2 4h2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-        <span><span class="brand-name">Recording<span>Note</span></span><span class="brand-caption">ローカル版</span></span>
+        <span><span class="brand-name">Recording<span>Note</span></span><span class="brand-caption">ブラウザ完結・Haas-ja</span></span>
       </a>
-      <div id="connection-status" class="connection-status" data-state="idle" role="status"><span class="status-dot" aria-hidden="true"></span><span id="connection-label">Haas-ja 確認中</span></div>
+      <div id="model-status" class="connection-status" data-state="idle" role="status"><span class="status-dot" aria-hidden="true"></span><span id="model-status-label">Haas-ja 待機中</span></div>
     </div>
   </header>
 
   <main id="main" class="workspace">
     <div class="intro">
-      <div><p class="eyebrow">あなたの講義を、あなたのノートに</p><h1>声を残して、学びを深める。</h1><p class="intro-description">このPCの Haas-ja で文字起こしし、そのまま学習ノートへ。</p></div>
+      <div><p class="eyebrow">あなたの講義を、あなたのノートに</p><h1>声を残して、学びを深める。</h1><p class="intro-description">このブラウザ内の Haas-ja で文字起こしし、そのまま学習ノートへ。</p></div>
       <a class="guide-link" href="#guide">はじめての方へ <span aria-hidden="true">↗</span></a>
     </div>
 
@@ -36,11 +36,6 @@
     <noscript><p class="notice error-notice">このサイトはJavaScriptを使います。ブラウザの設定でJavaScriptを有効にして、ページを開き直してください。</p></noscript>
     <p id="storage-warning" class="notice warning-notice" role="alert" hidden></p>
 
-    <div id="server-banner" class="card server-banner" hidden>
-      <p id="connection-message" class="status-text" role="status">サーバーの状態を確認しています。</p>
-      <button id="test-connection" type="button" class="button secondary small">状態を再確認 <span aria-hidden="true">↻</span></button>
-    </div>
-
     <section id="audio-section" class="card audio-card" aria-labelledby="audio-heading">
       <div class="section-heading"><span class="section-number">01</span><div><h2 id="audio-heading">録音・音声入力</h2><p>マイクで録音するか、手元の音声ファイルを選んでください。</p></div><span class="tag">音声からはじめる</span></div>
       <div class="audio-inputs">
@@ -52,31 +47,42 @@
       </div>
       <p id="audio-message" class="status-text" role="status">音声を用意すると、文字起こしを開始できます。</p>
       <div id="audio-preview-container" class="audio-preview" hidden><p id="audio-name" class="audio-name"></p><audio id="audio-preview" controls preload="metadata" aria-label="用意した音声のプレビュー"></audio></div>
-      <p class="help-text">音声はこのPCの中だけで処理します（外部送信なし）。音声自体は履歴に保存しません。</p>
+      <p class="help-text">音声はこのブラウザの中だけで文字起こしします。外部サーバーへ音声を送信しません。</p>
     </section>
 
     <div class="document-heading"><div><p class="eyebrow">学びのワークスペース</p><p id="current-title">新しいノート</p></div><a href="#history-section" class="text-link">保存した履歴を見る <span aria-hidden="true">↓</span></a></div>
     <div class="results-grid">
       <section id="transcription-section" class="card result-card" aria-labelledby="transcription-heading">
-        <div class="section-heading"><span class="section-number">02</span><div><h2 id="transcription-heading">文字起こし</h2><p>このPCの Haas-ja-v1.0</p></div><span id="transcript-count" class="count">0文字</span></div>
+        <div class="section-heading"><span class="section-number">02</span><div><h2 id="transcription-heading">文字起こし</h2><p>ブラウザ内 Haas-ja-v1.0（WebGPU / WASM）</p></div><span id="transcript-count" class="count">0文字</span></div>
         <label class="sr-only" for="transcript">文字起こしの本文（編集可能）</label>
         <textarea id="transcript" class="transcript-editor" placeholder="文字起こしがここに表示されます。誤認識は編集してからノートにまとめられます。本文を直接貼り付けることもできます。" spellcheck="false"></textarea>
-        <p class="help-text editor-help">編集内容は履歴に自動保存。ノートへの反映には再生成が必要です。</p>
-        <div class="result-actions"><button id="transcribe-start" type="button" class="button primary" disabled>文字起こし開始 <span aria-hidden="true">→</span></button><button id="transcribe-cancel" type="button" class="button quiet" hidden>待機を中止</button></div>
+        <div class="transcript-tools">
+          <button id="copy-transcript" type="button" class="button small secondary" disabled>文字起こしをコピー</button>
+          <p class="help-text editor-help">編集内容は履歴に自動保存。ノートへの反映には再生成が必要です。</p>
+        </div>
+        <div class="result-actions"><button id="transcribe-start" type="button" class="button primary" disabled>文字起こし開始 <span aria-hidden="true">→</span></button><button id="transcribe-cancel" type="button" class="button quiet" hidden>文字起こしを中止</button></div>
         <progress id="transcribe-progress" class="job-progress" aria-label="文字起こしの処理中" hidden></progress>
         <p id="transcribe-message" class="status-text result-status" role="status">音声を用意してから開始してください。</p>
+        <p id="haas-notice" class="help-text haas-notice" role="status" hidden></p>
       </section>
 
       <section id="note-section" class="card result-card" aria-labelledby="note-heading">
         <div class="section-heading"><span class="section-number">03</span><div><h2 id="note-heading">AIノート生成</h2><p>Gemini API（Markdown）</p></div><span class="tag blue-tag">Markdown</span></div>
-        <p id="note-provider-status" class="help-text">ノート生成：状態を確認しています。</p>
+        <p id="note-provider-status" class="help-text">ノート生成：Gemini APIキー未設定（使う場合は下から設定できます）</p>
+        <details id="gemini-settings" class="inline-settings">
+          <summary>Gemini APIキーを設定（任意）<span class="summary-chevron" aria-hidden="true">⌄</span></summary>
+          <div class="inline-settings-body">
+            <label for="gemini-key">Gemini APIキー<input id="gemini-key" type="password" placeholder="AIza…（このブラウザにのみ保存）" autocomplete="off" spellcheck="false"></label>
+            <label for="gemini-model">モデル名<input id="gemini-model" type="text" value="gemini-2.5-flash" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+            <p class="help-text">キーはこのブラウザの localStorage にのみ保存され、Google の Gemini API 以外へは送信しません。文字起こしだけを使う場合は入力不要です。</p>
+          </div>
+        </details>
         <div id="note-empty" class="note-empty"><span class="empty-note-icon" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="M13 7h16l8 8v26H13zM29 7v9h8M19 23h12M19 29h12M19 35h7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span><h3>講義の要点を、読み返せる形に。</h3><p>文字起こしをもとに、見出し・重要語句・<br>復習ポイントをまとめます。</p></div>
         <article id="note-output" class="markdown-body" aria-label="生成した学習ノート" hidden></article>
         <div class="note-export"><button id="copy-note" type="button" class="button small secondary" disabled>Markdownをコピー</button><button id="download-note" type="button" class="button small secondary" disabled>.mdでダウンロード</button></div>
-        <div class="result-actions"><button id="generate-note" type="button" class="button primary" disabled>AIノートを生成 <span aria-hidden="true">→</span></button><button id="note-cancel" type="button" class="button quiet" hidden>待機を中止</button></div>
+        <div class="result-actions"><button id="generate-note" type="button" class="button primary" disabled>AIノートを生成 <span aria-hidden="true">→</span></button><button id="note-cancel" type="button" class="button quiet" hidden>生成を中止</button></div>
         <progress id="note-progress" class="job-progress" aria-label="AIノートの処理中" hidden></progress>
         <p id="note-message" class="status-text result-status" role="status">先に文字起こしを用意してください。</p>
-        <p class="help-text">ノート生成を使う場合は、プロジェクト直下の .env に GEMINI_API_KEY を設定してください。</p>
       </section>
     </div>
 
@@ -89,15 +95,15 @@
     </section>
 
     <section id="guide" class="card guide-card" aria-labelledby="guide-heading">
-      <div class="section-heading"><span class="section-number">05</span><div><h2 id="guide-heading">使い方ガイド</h2><p>むずかしい設定なしで、自分のPCだけで文字起こしを始められます。</p></div></div>
+      <div class="section-heading"><span class="section-number">05</span><div><h2 id="guide-heading">使い方ガイド</h2><p>アプリのインストール不要で、ブラウザだけで使えます。</p></div></div>
       <ol class="guide-steps">
-        <li><div><h3>起動する</h3><p>Mac / Linux は <code>./start.sh</code>、Windows は <code>start.bat</code> を実行します。初回だけ仮想環境と <code>.env</code> を自動で作り、ページを開きます。</p></div></li>
-        <li><div><h3>Haas-ja で文字起こし</h3><p>録音または音声ファイルを選び「文字起こし開始」を押します。初回だけモデルを取得し（CPU/ONNX時は約460MB）、以後はローカルのキャッシュを使います。</p></div></li>
-        <li><div><h3>Gemini で AIノートを作る（任意）</h3><p>ノート生成を使うときは、フォルダ内の <code>.env</code> にある <code>GEMINI_API_KEY=</code> の後ろにキーを貼り付けて保存してください。サーバーの再起動なしで使えます。</p></div></li>
+        <li><div><h3>音声を用意</h3><p>このページでそのまま録音するか、手元の音声ファイル（M4A / MP3 / WAV など）を選びます。</p></div></li>
+        <li><div><h3>ブラウザ内 Haas-ja で文字起こし</h3><p>「文字起こし開始」を押すと、初回だけモデル（約363 MB）を自動取得してブラウザにキャッシュし、あなたの PC 上で推論します。音声は端末の外に出ません。</p></div></li>
+        <li><div><h3>Gemini API で AIノート作成（任意）</h3><p>今は「Gemini APIキーを設定（任意）」にキーを入れてすぐ試せます。後からサイト側設定（<code>gemini-note.js</code>）に中継 API を組み込めば、利用者のキー入力も不要になります。</p></div></li>
       </ol>
-      <div class="guide-notices"><p>環境に応じて NVIDIA GPU（Linux）または CPU / ONNX（Mac・Windows・Linux）を自動で選びます。詳しい仕様やトラブル対処は <a href="./README.md">README</a> を参照してください。</p></div>
+      <div class="guide-notices"><p>2回目以降の文字起こしはブラウザのキャッシュを使うため、モデルを再ダウンロードせずに動きます。詳しくは <a href="./README.md">README</a> を参照してください。</p></div>
     </section>
-    <footer class="site-footer"><span>RecordingNote <span class="footer-dot" aria-hidden="true">·</span> あなたの学びを、手元に。</span><span>ローカル版 / 履歴はブラウザ内に保存</span></footer>
+    <footer class="site-footer"><span>RecordingNote <span class="footer-dot" aria-hidden="true">·</span> あなたの学びを、手元に。</span><span>ブラウザ完結版 / 履歴はブラウザ内に保存</span></footer>
   </main>
 </body>
 </html>

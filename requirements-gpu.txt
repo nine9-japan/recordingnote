@@ -1,4 +1,0 @@
-# 公式 Haas-ja-v1.0（Linux + NVIDIA Ampere以降のGPU / CUDA / Python 3.11+ が必要）
-haas-asr @ git+https://github.com/third-intelligence/Haas-ASR.git
-# haas-asr の導入で protobuf が 5.x に戻り、モデル読み込みが壊れるため固定する
-protobuf==6.33.5
