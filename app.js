@@ -1,17 +1,14 @@
 (() => {
   "use strict";
 
-  const DEFAULT_BROWSER_MODEL = "onnx-community/whisper-large-v3-turbo-ONNX";
-  const BROWSER_MODELS = new Set([DEFAULT_BROWSER_MODEL, "onnx-community/kotoba-whisper-v2.2-ONNX"]);
-  const ASR_MODULE_URL = new URL("./asr-worker.js", document.currentScript?.src || document.baseURI).href;
   const POLL_INTERVAL = 3000;
   const api = (path) => new URL(path, document.baseURI).href;
   const $ = (id) => document.getElementById(id);
   const ui = {
-    settings: $("settings"),
+    serverBanner: $("server-banner"),
     testConnection: $("test-connection"), connectionStatus: $("connection-status"),
     connectionLabel: $("connection-label"), connectionMessage: $("connection-message"),
-    settingsSaveStatus: $("settings-save-status"), storageWarning: $("storage-warning"),
+    storageWarning: $("storage-warning"),
     recordStart: $("record-start"), recordStop: $("record-stop"),
     recordingTime: $("recording-time"), recordingLabel: $("recording-label"),
     recordingDot: $("recording-dot"), audioFile: $("audio-file"),
@@ -21,9 +18,6 @@
     transcriptCount: $("transcript-count"), transcribeStart: $("transcribe-start"),
     transcribeCancel: $("transcribe-cancel"), transcribeMessage: $("transcribe-message"),
     transcribeProgress: $("transcribe-progress"),
-    asrEngine: $("asr-engine"), browserAsrOptions: $("browser-asr-options"),
-    browserAsrModel: $("browser-asr-model"), asrDescription: $("asr-description"),
-    browserAsrStatus: $("browser-asr-status"), localAsrHelp: $("local-asr-help"),
     noteProviderStatus: $("note-provider-status"),
     generateNote: $("generate-note"), noteCancel: $("note-cancel"),
     noteMessage: $("note-message"), noteProgress: $("note-progress"),
@@ -33,13 +27,12 @@
     historyList: $("history-list"), historyMessage: $("history-message"),
     transcriptionSection: $("transcription-section"),
   };
-  const browserASR = { worker: null, workerUnavailable: false, mainEngine: null, nextId: 0 };
   const state = {
     history: [], historyWritable: true, historyTimer: null, currentId: null,
     note: "", audio: null, audioLabel: "", audioUrl: null,
     recorder: null, stream: null, recording: false, starting: false, stopping: false,
     recordingStarted: 0, recordingTimer: null, checking: false, operation: null,
-    notesReady: false,
+    notesReady: false, healthTimer: null, modelReady: false, engineLabel: "Haas-ja-v1.0",
   };
 
   class UserError extends Error {}
@@ -47,11 +40,6 @@
     constructor(text = "待機を中止しました。ローカルサーバー側の処理は継続する場合があります。") {
       super(text);
     }
-  }
-  class WorkerUnavailableError extends Error {}
-
-  function checkBrowserCancelled(signal) {
-    if (signal.aborted) throw new CancelledError("ブラウザ内の文字起こしを中止しました。これまでの本文とノートは保持しています。");
   }
 
   function message(element, text, tone = "neutral") {
@@ -67,18 +55,8 @@
   function readSetting(key, fallback = "") {
     try { return localStorage.getItem(key) ?? fallback; }
     catch {
-      storageWarning("ブラウザの保存機能を利用できません。設定と履歴はこのページを閉じると失われます。ブラウザのサイトデータ設定を確認し、ノートはダウンロードしてください。");
+      storageWarning("ブラウザの保存機能を利用できません。履歴はこのページを閉じると失われます。ブラウザのサイトデータ設定を確認し、ノートはダウンロードしてください。");
       return fallback;
-    }
-  }
-
-  function saveSetting(key, value) {
-    try {
-      localStorage.setItem(key, value);
-      message(ui.settingsSaveStatus, "設定をこのブラウザに保存しました。", "success");
-    } catch {
-      message(ui.settingsSaveStatus, "設定を保存できません。ブラウザのサイトデータの許可と空き容量を確認してください。", "error");
-      storageWarning("設定を保存できませんでした。このページでは入力した値を使えますが、再読み込みすると失われます。ブラウザの保存設定と空き容量を確認してください。");
     }
   }
 
@@ -137,44 +115,83 @@
   }
 
   function renderMarkdown(markdown) {
-    // Escape the whole source first. Only these fixed tags are inserted afterwards.
+    // Escape the whole source first. Only fixed safe tags are inserted afterwards.
     const lines = escapeHtml(markdown.replace(/\r\n?/g, "\n")).split("\n");
     const output = [];
-    let paragraph = [], list = [], code = [], inCode = false;
+    let paragraph = [];
+    let listItems = [];
+    let listTag = "";
+    let quoteLines = [];
+    let code = [];
+    let inCode = false;
     const inline = (text) => text.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+
     function flushParagraph() {
       if (paragraph.length) output.push(`<p>${paragraph.map(inline).join("<br>")}</p>`);
       paragraph = [];
     }
     function flushList() {
-      if (list.length) output.push(`<ul>${list.map((item) => `<li>${inline(item)}</li>`).join("")}</ul>`);
-      list = [];
+      if (listItems.length) output.push(`<${listTag}>${listItems.map((item) => `<li>${inline(item)}</li>`).join("")}</${listTag}>`);
+      listItems = [];
+      listTag = "";
     }
+    function flushQuote() {
+      if (quoteLines.length) output.push(`<blockquote><p>${quoteLines.map(inline).join("<br>")}</p></blockquote>`);
+      quoteLines = [];
+    }
+    function flushBlocks() {
+      flushParagraph();
+      flushList();
+      flushQuote();
+    }
+
     for (const line of lines) {
       if (/^\s*```/.test(line)) {
-        flushParagraph(); flushList();
-        if (inCode) { output.push(`<pre><code>${code.join("\n")}</code></pre>`); code = []; }
+        flushBlocks();
+        if (inCode) {
+          output.push(`<pre><code>${code.join("\n")}</code></pre>`);
+          code = [];
+        }
         inCode = !inCode;
       } else if (inCode) {
         code.push(line);
       } else if (!line.trim()) {
-        flushParagraph(); flushList();
+        flushBlocks();
       } else {
         const heading = /^(#{1,3})\s+(.+)$/.exec(line);
-        const item = /^\s*-\s+(.+)$/.exec(line);
+        const unordered = /^\s*[-*]\s+(.+)$/.exec(line);
+        const ordered = /^\s*\d+\.\s+(.+)$/.exec(line);
+        // '>' was escaped to '&gt;' by escapeHtml above.
+        const quote = /^\s*&gt;\s?(.*)$/.exec(line);
         if (heading) {
-          flushParagraph(); flushList();
+          flushBlocks();
           const level = heading[1].length;
           output.push(`<h${level}>${inline(heading[2])}</h${level}>`);
-        } else if (item) {
-          flushParagraph(); list.push(item[1]);
+        } else if (unordered) {
+          flushParagraph();
+          flushQuote();
+          if (listTag && listTag !== "ul") flushList();
+          listTag = "ul";
+          listItems.push(unordered[1]);
+        } else if (ordered) {
+          flushParagraph();
+          flushQuote();
+          if (listTag && listTag !== "ol") flushList();
+          listTag = "ol";
+          listItems.push(ordered[1]);
+        } else if (quote) {
+          flushParagraph();
+          flushList();
+          quoteLines.push(quote[1]);
         } else {
-          flushList(); paragraph.push(line);
+          flushList();
+          flushQuote();
+          paragraph.push(line);
         }
       }
     }
     if (inCode) output.push(`<pre><code>${code.join("\n")}</code></pre>`);
-    flushParagraph(); flushList();
+    flushBlocks();
     return output.join("\n");
   }
 
@@ -188,18 +205,8 @@
 
   function updateNoteDescription() {
     ui.noteProviderStatus.textContent = state.notesReady
-      ? "ノート生成：Gemini（このPCのサーバー経由）"
-      : "ノート生成：Gemini APIキーが未設定です。.env に設定してサーバーを再起動してください。";
-  }
-
-  function updateAsrDescription() {
-    const browser = ui.asrEngine.value === "browser";
-    ui.browserAsrOptions.hidden = !browser;
-    ui.browserAsrStatus.hidden = !browser || !ui.browserAsrStatus.textContent;
-    ui.localAsrHelp.hidden = browser;
-    ui.asrDescription.textContent = browser
-      ? "音声は端末の外へ送らず、このブラウザで文字起こしします。サーバーの設定は不要です。"
-      : "音声をこのPCのサーバーへ送り、Haas-ja-v1.0 で文字起こしします。";
+      ? "ノート生成：Gemini（設定済み）"
+      : "ノート生成：Gemini APIキー未設定（使う場合は .env に GEMINI_API_KEY を設定）";
   }
 
   function updateControls() {
@@ -211,8 +218,6 @@
     ui.transcribeStart.disabled = audioLocked || !state.audio;
     ui.generateNote.disabled = audioLocked || !ui.transcript.value.trim();
     ui.transcript.readOnly = busy;
-    ui.asrEngine.disabled = busy;
-    ui.browserAsrModel.disabled = busy;
     ui.testConnection.disabled = busy || state.checking;
     ui.copyNote.disabled = !state.note.trim();
     ui.downloadNote.disabled = !state.note.trim();
@@ -223,13 +228,11 @@
     ui.transcribeProgress.hidden = !transcribing;
     ui.noteProgress.hidden = !noting;
     ui.transcribeStart.textContent = transcribing ? "文字起こし中…" : "文字起こし開始 →";
-    ui.transcribeCancel.textContent = state.operation?.engine === "browser" ? "文字起こしを中止" : "待機を中止";
     ui.generateNote.textContent = noting ? "ノート生成中…" : "AIノートを生成 →";
-    ui.testConnection.textContent = state.checking ? "状態を確認中…" : "状態を再確認 ↗";
+    ui.testConnection.textContent = state.checking ? "状態を確認中…" : "状態を再確認 ↻";
     ui.transcriptCount.textContent = `${ui.transcript.value.length.toLocaleString("ja-JP")}文字`;
     for (const button of ui.historyList.querySelectorAll("button")) button.disabled = audioLocked;
     updateNoteDescription();
-    updateAsrDescription();
   }
 
   function setConnection(status, text) {
@@ -237,20 +240,35 @@
     ui.connectionLabel.textContent = text;
   }
 
+  function clearHealthPoll() {
+    if (state.healthTimer !== null) {
+      clearTimeout(state.healthTimer);
+      state.healthTimer = null;
+    }
+  }
+
+  function scheduleHealthPoll() {
+    clearHealthPoll();
+    state.healthTimer = setTimeout(() => {
+      state.healthTimer = null;
+      checkHealth().catch(() => { /* Status banner reflects loading/error state. */ });
+    }, POLL_INTERVAL);
+  }
+
   function assertServed() {
     if (location.protocol !== "http:" && location.protocol !== "https:") {
-      throw new UserError("このページはローカルサーバーから開く必要があります。ターミナルで `python server.py` を実行し、表示された http://127.0.0.1:8000 を開いてください。");
+      throw new UserError("このページはローカルサーバーから開く必要があります。start.sh（または start.bat / python server.py）を起動して http://127.0.0.1:8000 を開いてください。");
     }
   }
 
   function httpError(status, scope) {
     if (scope === "note") {
       if (status === 502) return "Geminiでノートを生成できませんでした。サーバーの表示とGoogle側の利用状況を確認してください。";
-      if (status === 503) return "Gemini APIキーが未設定です。.env に GEMINI_API_KEY を設定し、サーバーを再起動してください。";
+      if (status === 503) return "Gemini APIキーが未設定です。プロジェクト直下の .env に GEMINI_API_KEY を設定してから再実行してください。";
     }
-    if (status === 503) return "Haas-ja モデルを準備中です。初回は数分かかります。しばらく待ってから再実行してください。";
+    if (status === 503) return "Haas-ja モデルを準備中です。初回はモデルの取得に数分かかります。しばらく待ってから再実行してください。";
     if (scope === "job" && status === 404) return "処理中のジョブが見つかりません。サーバーを再起動した場合は、音声を送り直してください。";
-    if (status === 404) return "サーバーのAPIが見つかりません。`python server.py` で起動したページを開いているか確認してください。";
+    if (status === 404) return "サーバーのAPIが見つかりません。ローカルサーバーから開いているか確認してください。";
     if (status === 413) return "音声ファイルが大きすぎて送信できません。短い音声ファイルに分けて選び直してください。";
     if (status === 422) return "音声ファイルを読み取れませんでした。WAV・MP3 などに変換して再実行してください。";
     return `ローカルサーバーでエラーが発生しました（HTTP ${status}）。サーバーの画面を確認して再実行してください。`;
@@ -293,39 +311,59 @@
       if (signal?.aborted) throw new CancelledError();
       if (timedOut) throw new UserError("ローカルサーバーからの応答が時間内に届きませんでした。処理が続いている場合は、しばらく待ってから再実行してください。");
       if (error instanceof UserError) throw error;
-      throw new UserError("ローカルサーバーに接続できません。ターミナルで `python server.py` が動いているか確認してください。");
+      throw new UserError("ローカルサーバーに接続できません。start.sh（または start.bat）が動いているか確認してください。");
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", cancel);
     }
   }
 
+  function applyHealthData(data) {
+    state.notesReady = Boolean(data.notes?.ready);
+    state.engineLabel = typeof data.engine === "string" && data.engine ? data.engine : "Haas-ja-v1.0";
+    updateNoteDescription();
+  }
+
   async function checkHealth(signal) {
+    clearHealthPoll();
     assertServed();
-    setConnection("checking", "サーバー確認中");
+    if (!state.modelReady) setConnection("checking", "Haas-ja 確認中");
     let data;
     try {
       data = await requestJson(api("health"), { method: "GET" }, { scope: "health", timeout: 15000, signal });
     } catch (error) {
+      state.modelReady = false;
       setConnection("error", "サーバー 未接続");
+      ui.serverBanner.hidden = false;
+      message(ui.connectionMessage, userMessage(error, "ローカルサーバーに接続できません。"), "error");
+      updateControls();
       throw error;
     }
-    state.notesReady = Boolean(data.notes?.ready);
-    updateNoteDescription();
+    applyHealthData(data);
     if (data.model_error) {
-      setConnection("error", "モデル準備失敗");
+      state.modelReady = false;
+      setConnection("error", "Haas-ja 準備失敗");
+      ui.serverBanner.hidden = false;
       message(ui.connectionMessage, data.model_error, "error");
+      updateControls();
       throw new UserError(data.model_error);
     }
     if (data.model_loaded !== true) {
-      setConnection("checking", "モデル準備中");
-      message(ui.connectionMessage, "Haas-ja モデルを読み込み中です。初回は数分かかります。", "working");
-      throw new UserError("Haas-ja モデルを読み込み中です。初回は数分かかります。少し待ってから再実行してください。");
+      state.modelReady = false;
+      setConnection("checking", "Haas-ja 準備中");
+      ui.serverBanner.hidden = false;
+      message(ui.connectionMessage, "Haas-ja モデルを準備中です。初回はモデルの取得に数分かかります（完了すると自動で切り替わります）。", "working");
+      updateControls();
+      if (data.model_loading === true && !signal?.aborted) scheduleHealthPoll();
+      throw new UserError("Haas-ja モデルを準備中です。初回は数分かかります。準備完了までお待ちください。");
     }
-    setConnection("connected", "サーバー 接続済み");
+    state.modelReady = true;
+    setConnection("connected", `${state.engineLabel} 接続済み`);
+    ui.serverBanner.hidden = true;
     message(ui.connectionMessage, state.notesReady
       ? "文字起こしとノート生成を利用できます。"
       : "文字起こしを利用できます。ノート生成は .env に Gemini APIキーを設定すると使えます。", "success");
+    updateControls();
     return data;
   }
 
@@ -333,12 +371,11 @@
     if (state.operation || state.checking) return;
     state.checking = true;
     updateControls();
+    ui.serverBanner.hidden = false;
     message(ui.connectionMessage, "ローカルサーバーの状態を確認しています…", "working");
     try { await checkHealth(); }
-    catch (error) {
-      const text = userMessage(error, "サーバーの状態を確認できませんでした。");
-      message(ui.connectionMessage, text, text.includes("読み込み中") ? "working" : "error");
-    } finally { state.checking = false; updateControls(); }
+    catch { /* checkHealth already updated the banner and status pill. */ }
+    finally { state.checking = false; updateControls(); }
   }
 
   function waitForPoll(signal) {
@@ -357,18 +394,38 @@
     return encodeURIComponent(String(data.job_id));
   }
 
-  async function pollJob(jobId, signal, element, kind) {
-    const label = kind === "note" ? "ノート生成" : "文字起こし";
-    message(element, `${label}の順番を待っています（queued）。このページを開いたままお待ちください。`, "working");
+  async function pollJob(jobId, signal, element) {
+    message(element, "文字起こしの順番を待っています（queued）。このページを開いたままお待ちください。", "working");
     while (true) {
       await waitForPoll(signal);
       const data = await requestJson(api(`jobs/${jobId}`), { method: "GET" }, { signal, scope: "job" });
       switch (data.status) {
-        case "queued": message(element, `${label}の順番を待っています（queued）。`, "working"); break;
-        case "running": message(element, `${label}を実行中です（running）。長い講義は時間がかかります。`, "working"); break;
-        case "done": return data;
-        case "error": throw new UserError(data.error ? `${label}に失敗しました: ${data.error}` : `${label}に失敗しました。サーバーの画面を確認してください。`);
-        default: throw new UserError("サーバーから認識できない処理状況が返りました。サーバーを再起動して再実行してください。");
+        case "queued":
+          ui.transcribeProgress.removeAttribute("value");
+          message(element, "文字起こしの順番を待っています（queued）。", "working");
+          break;
+        case "running":
+          if (data.phase === "converting") {
+            ui.transcribeProgress.removeAttribute("value");
+            message(element, "音声を16kHz・モノラルに変換しています…", "working");
+          } else if (typeof data.progress === "number" && Number.isFinite(data.progress)) {
+            const percent = Math.min(100, Math.max(0, Math.round(data.progress)));
+            ui.transcribeProgress.max = 100;
+            ui.transcribeProgress.value = percent;
+            message(element, `文字起こしを実行中です（${percent}%）。長い講義は時間がかかります。`, "working");
+          } else {
+            ui.transcribeProgress.removeAttribute("value");
+            message(element, "文字起こしを実行中です（running）。長い講義は時間がかかります。", "working");
+          }
+          break;
+        case "done":
+          ui.transcribeProgress.max = 100;
+          ui.transcribeProgress.value = 100;
+          return data;
+        case "error":
+          throw new UserError(data.error ? `文字起こしに失敗しました: ${data.error}` : "文字起こしに失敗しました。サーバーの画面を確認してください。");
+        default:
+          throw new UserError("サーバーから認識できない処理状況が返りました。サーバーを再起動して再実行してください。");
       }
     }
   }
@@ -403,181 +460,6 @@
     updateControls();
   }
 
-  async function decodeBrowserAudio(blob, signal) {
-    checkBrowserCancelled(signal);
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass) throw new UserError("このブラウザでは音声をデコードできません。最新版のブラウザで開くか、「このPCのHaas-ja」へ切り替えてください。");
-    let context;
-    try {
-      context = new AudioContextClass({ sampleRate: 16000 });
-      const bytes = await blob.arrayBuffer();
-      checkBrowserCancelled(signal);
-      const decoded = await context.decodeAudioData(bytes);
-      checkBrowserCancelled(signal);
-      if (!decoded.length || !decoded.numberOfChannels || decoded.sampleRate !== 16000) {
-        throw new UserError("音声を16kHzで読み込めませんでした。別の音声形式（WAV・MP3など）で保存し直すか、「このPCのHaas-ja」へ切り替えてください。");
-      }
-      const mono = new Float32Array(decoded.length);
-      for (let channel = 0; channel < decoded.numberOfChannels; channel++) {
-        const samples = decoded.getChannelData(channel);
-        for (let i = 0; i < mono.length; i++) mono[i] += samples[i] / decoded.numberOfChannels;
-      }
-      return mono;
-    } catch (error) {
-      checkBrowserCancelled(signal);
-      if (error instanceof UserError) throw error;
-      throw new UserError("音声ファイルを読み込めませんでした。ブラウザ非対応の形式、ファイルの破損、またはメモリ不足の可能性があります。再生を確認し、WAV・MP3などに変換するか、「このPCのHaas-ja」へ切り替えてください。");
-    } finally {
-      if (context) { try { await context.close(); } catch { /* Already closed. */ } }
-    }
-  }
-
-  function discardAsrWorker(worker = browserASR.worker) {
-    worker?.terminate();
-    if (browserASR.worker === worker) browserASR.worker = null;
-  }
-
-  async function getAsrWorker(signal) {
-    checkBrowserCancelled(signal);
-    if (browserASR.workerUnavailable || typeof Worker === "undefined") throw new WorkerUnavailableError();
-    if (browserASR.worker) return browserASR.worker;
-    let worker;
-    try { worker = new Worker(ASR_MODULE_URL, { type: "module" }); }
-    catch { browserASR.workerUnavailable = true; throw new WorkerUnavailableError(); }
-    try {
-      await new Promise((resolve, reject) => {
-        const cleanup = () => {
-          clearTimeout(timer);
-          worker.removeEventListener("message", ready);
-          worker.removeEventListener("error", failed);
-          worker.removeEventListener("messageerror", failed);
-          signal.removeEventListener("abort", cancelled);
-        };
-        const ready = ({ data }) => { if (data?.type === "ready") { cleanup(); resolve(); } };
-        const failed = (event) => { event?.preventDefault?.(); cleanup(); reject(new WorkerUnavailableError()); };
-        const cancelled = () => { cleanup(); reject(new CancelledError("ブラウザ内の文字起こしを中止しました。")); };
-        const timer = setTimeout(failed, 10000);
-        worker.addEventListener("message", ready);
-        worker.addEventListener("error", failed);
-        worker.addEventListener("messageerror", failed);
-        signal.addEventListener("abort", cancelled, { once: true });
-        if (signal.aborted) cancelled();
-      });
-      checkBrowserCancelled(signal);
-      browserASR.worker = worker;
-      return worker;
-    } catch (error) {
-      discardAsrWorker(worker);
-      if (!(error instanceof CancelledError)) browserASR.workerUnavailable = true;
-      throw error;
-    }
-  }
-
-  async function transcribeInWorker(audio, model, signal, onEvent) {
-    const worker = await getAsrWorker(signal);
-    checkBrowserCancelled(signal);
-    const id = ++browserASR.nextId;
-    return new Promise((resolve, reject) => {
-      const cleanup = () => {
-        worker.removeEventListener("message", receive);
-        worker.removeEventListener("error", failed);
-        worker.removeEventListener("messageerror", failed);
-        signal.removeEventListener("abort", cancelled);
-      };
-      const receive = ({ data }) => {
-        if (data?.id !== id) return;
-        if (data.type === "result") { cleanup(); resolve(data.result); }
-        else if (data.type === "error") { cleanup(); reject(new UserError(data.message)); }
-        else onEvent(data);
-      };
-      const failed = (event) => {
-        event?.preventDefault?.(); cleanup(); discardAsrWorker(worker);
-        browserASR.workerUnavailable = true;
-        reject(new WorkerUnavailableError());
-      };
-      const cancelled = () => {
-        cleanup(); discardAsrWorker(worker);
-        reject(new CancelledError("ブラウザ内の文字起こしを中止しました。これまでの本文とノートは保持しています。"));
-      };
-      worker.addEventListener("message", receive);
-      worker.addEventListener("error", failed);
-      worker.addEventListener("messageerror", failed);
-      signal.addEventListener("abort", cancelled, { once: true });
-      if (signal.aborted) { cancelled(); return; }
-      // Keep the source buffer intact so a Worker crash can fall back without re-decoding.
-      try { worker.postMessage({ type: "transcribe", id, audio, model }); }
-      catch { failed(); }
-    });
-  }
-
-  async function transcribeInBrowser(blob, model, signal) {
-    let inferenceTimer = null;
-    const notices = new Set();
-    const stopTimer = () => { clearInterval(inferenceTimer); inferenceTimer = null; };
-    const onEvent = (event) => {
-      if (signal.aborted) return;
-      if (event.type === "notice") {
-        notices.add(event.message);
-        message(ui.browserAsrStatus, [...notices].join(" "));
-        ui.browserAsrStatus.hidden = false;
-      } else if (event.type === "inference") {
-        stopTimer();
-        ui.transcribeProgress.removeAttribute("value");
-        const started = Date.now();
-        const tick = () => {
-          if (signal.aborted) return;
-          const elapsed = Math.floor((Date.now() - started) / 1000);
-          message(ui.transcribeMessage, `${event.device === "webgpu" ? "WebGPU" : "WASM（CPU）"}で文字起こしを処理中… 経過 ${Math.floor(elapsed / 60)}分${String(elapsed % 60).padStart(2, "0")}秒。長い音声は時間がかかります。`, "working");
-        };
-        tick(); inferenceTimer = setInterval(tick, 1000);
-      } else if (event.type === "loading") {
-        stopTimer();
-        ui.transcribeProgress.removeAttribute("value");
-        message(ui.transcribeMessage, event.message, "working");
-      } else if (event.type === "progress") {
-        const progress = event.progress;
-        const file = progress?.file || progress?.name || "モデルファイル";
-        if (progress?.status === "progress" && Number.isFinite(progress.progress)) {
-          const percent = Math.min(100, Math.max(0, progress.progress));
-          ui.transcribeProgress.max = 100; ui.transcribeProgress.value = percent;
-          message(ui.transcribeMessage, `モデルをダウンロード中：${file} — ${percent.toFixed(1)}%`, "working");
-        } else if (progress?.status === "done") {
-          ui.transcribeProgress.max = 100; ui.transcribeProgress.value = 100;
-          message(ui.transcribeMessage, `モデルの読み込み：${file} — 100%（キャッシュまたはダウンロード完了）`, "working");
-        } else if (progress?.status === "initiate" || progress?.status === "download") {
-          ui.transcribeProgress.removeAttribute("value");
-          message(ui.transcribeMessage, `モデルファイルを準備中：${file}`, "working");
-        }
-      }
-    };
-    message(ui.browserAsrStatus, ""); ui.browserAsrStatus.hidden = true;
-    message(ui.transcribeMessage, "音声を端末内で16kHz・モノラルに変換しています…", "working");
-    signal.addEventListener("abort", stopTimer, { once: true });
-    try {
-      const audio = await decodeBrowserAudio(blob, signal);
-      checkBrowserCancelled(signal);
-      try { return await transcribeInWorker(audio, model, signal, onEvent); }
-      catch (error) {
-        checkBrowserCancelled(signal);
-        if (!(error instanceof WorkerUnavailableError)) throw error;
-        onEvent({ type: "notice", message: "この環境ではWeb Workerを使えないため、メインスレッドで処理します。画面の反応が遅くなり、中止の反映が遅れる場合があります。" });
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        checkBrowserCancelled(signal);
-        if (!browserASR.mainEngine) {
-          let module;
-          try { module = await import(ASR_MODULE_URL); }
-          catch { throw new UserError("ブラウザ用の文字起こし処理を読み込めません。HTTPSまたはlocalhostで開き、asr-worker.js が配信されているか確認するか、「このPCのHaas-ja」へ切り替えてください。"); }
-          browserASR.mainEngine = module.createBrowserASR();
-        }
-        try { return await browserASR.mainEngine.transcribe(audio, model, { signal, onEvent }); }
-        catch (error) { checkBrowserCancelled(signal); throw new UserError(error.message); }
-      }
-    } finally {
-      stopTimer();
-      signal.removeEventListener("abort", stopTimer);
-    }
-  }
-
   async function transcribeWithLocal(audio, signal) {
     message(ui.transcribeMessage, "文字起こしの前にサーバーの状態を確認しています…", "working");
     await checkHealth(signal);
@@ -585,7 +467,7 @@
     form.append("file", audio, audio.name || "recording.webm");
     message(ui.transcribeMessage, "音声をこのPCのサーバーへ送信しています…", "working");
     const submitted = await requestJson(api("jobs"), { method: "POST", body: form }, { signal, scope: "upload", timeout: 120000 });
-    const data = await pollJob(jobIdFrom(submitted), signal, ui.transcribeMessage, "transcribe");
+    const data = await pollJob(jobIdFrom(submitted), signal, ui.transcribeMessage);
     return resultText(data, ["transcript", "text"]);
   }
 
@@ -594,16 +476,11 @@
     const operation = beginOperation("transcribe");
     if (!operation) return;
     const signal = operation.controller.signal;
-    operation.engine = ui.asrEngine.value;
-    updateControls();
     const audio = state.audio, label = state.audioLabel;
     ui.transcribeProgress.removeAttribute("value");
     try {
-      const transcript = operation.engine === "browser"
-        ? (await transcribeInBrowser(audio, ui.browserAsrModel.value, signal)).text
-        : await transcribeWithLocal(audio, signal);
-      if (operation.engine === "browser") checkBrowserCancelled(signal);
-      if (!transcript.trim()) throw new UserError("処理は完了しましたが本文が空です。音声が入っているか再生して確かめ、再実行してください。解決しない場合は文字起こしエンジンを切り替えてください。");
+      const transcript = await transcribeWithLocal(audio, signal);
+      if (!transcript.trim()) throw new UserError("処理は完了しましたが本文が空です。音声が入っているか再生して確かめ、再実行してください。");
       ui.transcript.value = transcript;
       createRecord(transcript, label);
       showNote("");
@@ -611,16 +488,15 @@
       message(ui.transcribeMessage, "文字起こしが完了しました（done）。履歴に追加しました。誤認識を編集して、AIノートを生成できます。", "success");
       message(ui.noteMessage, "文字起こしを確認したら「AIノートを生成」を押してください。");
     } catch (error) {
-      message(ui.transcribeMessage, userMessage(error, "文字起こしを完了できませんでした。音声と選択したエンジンの状態を確認し、再実行するかエンジンを切り替えてください。"), error instanceof CancelledError ? "neutral" : "error");
+      message(ui.transcribeMessage, userMessage(error, "文字起こしを完了できませんでした。サーバーと音声の状態を確認し、再実行してください。"), error instanceof CancelledError ? "neutral" : "error");
     } finally { endOperation(operation); }
   }
 
   async function generateNoteWithServer(transcript, title, signal) {
     message(ui.noteMessage, "サーバーの状態を確認しています…", "working");
     const health = await requestJson(api("health"), { method: "GET" }, { scope: "health", timeout: 15000, signal });
-    state.notesReady = Boolean(health.notes?.ready);
-    updateNoteDescription();
-    if (!state.notesReady) throw new UserError("Gemini APIキーが未設定です。.env に GEMINI_API_KEY を設定し、サーバーを再起動してください。");
+    applyHealthData(health);
+    if (!state.notesReady) throw new UserError("Gemini APIキーが未設定です。プロジェクト直下の .env に GEMINI_API_KEY を設定してから再実行してください。");
     message(ui.noteMessage, "Geminiに文字起こし全文を送り、ノートを生成しています…", "working");
     const data = await requestJson(api("notes"), {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -673,7 +549,7 @@
     const size = file.size >= 1024 * 1024 ? `${(file.size / (1024 * 1024)).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`;
     ui.audioName.textContent = `${label} · ${size}`;
     message(ui.audioMessage, "音声を用意しました。再生して確認したら「文字起こし開始」を押してください。", "success");
-    message(ui.transcribeMessage, "用意した音声を、選択したエンジンで文字起こしできます。");
+    message(ui.transcribeMessage, "用意した音声を Haas-ja で文字起こしできます。");
     updateControls();
   }
 
@@ -702,7 +578,7 @@
   async function startRecording() {
     if (state.recording || state.starting || state.operation) return;
     if (window.isSecureContext === false || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
-      message(ui.audioMessage, "この環境ではブラウザ録音を使えません。HTTPSまたはlocalhostで最新版のブラウザから開くか、音声ファイルを選択してください。", "error");
+      message(ui.audioMessage, "この環境ではブラウザ録音を使えません。localhostで最新版のブラウザから開くか、音声ファイルを選択してください。", "error");
       return;
     }
     state.starting = true;
@@ -869,22 +745,18 @@
     finally { if (url) setTimeout(() => URL.revokeObjectURL(url), 1000); }
   }
 
-  // Colab-era settings are no longer used. Remove stored URLs and keys.
-  for (const key of ["rn_backend_url", "rn_backend_key", "rn_gemini_key", "rn_gemini_model"]) {
+  // Remove legacy client-side settings from earlier versions.
+  for (const key of [
+    "rn_backend_url",
+    "rn_backend_key",
+    "rn_gemini_key",
+    "rn_gemini_model",
+    "rn_asr_engine",
+    "rn_browser_asr_model",
+  ]) {
     try { localStorage.removeItem(key); } catch { /* Storage may be unavailable. */ }
   }
-  const savedEngine = readSetting("rn_asr_engine", "browser");
-  ui.asrEngine.value = savedEngine === "local" || savedEngine === "colab" ? "local" : "browser";
-  const savedBrowserModel = readSetting("rn_browser_asr_model", DEFAULT_BROWSER_MODEL);
-  ui.browserAsrModel.value = BROWSER_MODELS.has(savedBrowserModel) ? savedBrowserModel : DEFAULT_BROWSER_MODEL;
-  ui.asrEngine.addEventListener("change", () => { saveSetting("rn_asr_engine", ui.asrEngine.value); updateAsrDescription(); });
-  ui.browserAsrModel.addEventListener("change", () => {
-    saveSetting("rn_browser_asr_model", ui.browserAsrModel.value);
-    discardAsrWorker();
-    // No operation is active while this control is enabled.
-    void browserASR.mainEngine?.dispose();
-    message(ui.browserAsrStatus, ""); updateAsrDescription();
-  });
+
   ui.testConnection.addEventListener("click", testConnection);
   ui.recordStart.addEventListener("click", startRecording);
   ui.recordStop.addEventListener("click", stopRecording);
@@ -921,20 +793,21 @@
   window.addEventListener("pagehide", (event) => {
     if (state.historyTimer !== null) persistHistory();
     if (!event.persisted) {
+      clearHealthPoll();
       state.operation?.controller.abort();
-      discardAsrWorker();
       stopTracks();
       if (state.audioUrl) URL.revokeObjectURL(state.audioUrl);
     }
   });
 
   loadHistory();
-  setConnection("idle", "サーバー 未確認");
+  setConnection("idle", "Haas-ja 確認中");
   renderHistory();
   if (location.protocol === "http:" || location.protocol === "https:") {
-    checkHealth().catch(() => { /* The status card shows the error. */ });
+    checkHealth().catch(() => { /* The status banner shows loading/error details. */ });
   } else {
     setConnection("error", "サーバー 未接続");
-    message(ui.connectionMessage, "このページはローカルサーバーから開いてください。`python server.py` を実行し、http://127.0.0.1:8000 を開きます。", "error");
+    ui.serverBanner.hidden = false;
+    message(ui.connectionMessage, "このページはローカルサーバーから開いてください。start.sh（または start.bat）を実行し、http://127.0.0.1:8000 を開きます。", "error");
   }
 })();

@@ -8,6 +8,11 @@ frontend or the job API.
 from __future__ import annotations
 
 import os
+import re
+from pathlib import Path
+from typing import Protocol
+
+from dotenv import dotenv_values
 
 NOTE_PROMPT = (
     "あなたは大学講義の学習ノート作成者です。以下は講義の文字起こしです。"
@@ -20,10 +25,22 @@ NOTE_PROMPT = (
 )
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+DEFAULT_ENV_PATH = Path(__file__).resolve().parent / ".env"
+
+_OUTER_FENCE_RE = re.compile(r"^```(?:markdown|md)?[ \t]*\r?\n([\s\S]*?)\r?\n```$", re.IGNORECASE)
 
 
 class NoteGenerationError(RuntimeError):
     """A message that can be shown to the user as-is."""
+
+
+class NoteProvider(Protocol):
+    """Minimal interface for note generation backends."""
+
+    name: str
+    model: str
+
+    def generate(self, transcript: str, title: str = "") -> str: ...
 
 
 def build_prompt(transcript: str) -> str:
@@ -39,9 +56,11 @@ class GeminiProvider:
         self._api_key = api_key
         self.model = model or DEFAULT_GEMINI_MODEL
 
-    def generate(self, transcript: str) -> str:
+    def generate(self, transcript: str, title: str = "") -> str:
         import httpx
 
+        del title  # Reserved for future provider prompt customization.
+        safe_transcript = transcript.replace(self._api_key, "[APIキー]") if self._api_key else transcript
         try:
             with httpx.Client(timeout=180) as client:
                 response = client.post(
@@ -50,7 +69,7 @@ class GeminiProvider:
                         "Content-Type": "application/json",
                         "x-goog-api-key": self._api_key,
                     },
-                    json={"contents": [{"role": "user", "parts": [{"text": build_prompt(transcript)}]}]},
+                    json={"contents": [{"role": "user", "parts": [{"text": build_prompt(safe_transcript)}]}]},
                 )
         except httpx.HTTPError as exc:
             raise NoteGenerationError(
@@ -83,11 +102,17 @@ class GeminiProvider:
             for part in parts
             if isinstance(part, dict) and not part.get("thought") and isinstance(part.get("text"), str)
         )
-        if not note.strip():
+        unfenced = note.strip()
+        matched = _OUTER_FENCE_RE.match(unfenced)
+        if matched:
+            unfenced = matched.group(1).strip()
+        if self._api_key:
+            unfenced = unfenced.replace(self._api_key, "[APIキー]")
+        if not unfenced:
             raise NoteGenerationError(
                 "Geminiからノート本文が返りませんでした。入力内容とGoogle側の利用状況を確認して再実行してください。"
             )
-        return note
+        return unfenced
 
 
 def _gemini_error_message(status: int) -> str:
@@ -100,10 +125,27 @@ def _gemini_error_message(status: int) -> str:
     return f"Geminiでエラーが発生しました（HTTP {status}）。時間を置いて再実行してください。"
 
 
-def load_provider() -> GeminiProvider | None:
-    """Return the configured provider, or None when notes are not set up yet."""
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+def _read_setting(name: str, default: str = "", env_path: Path | None = None) -> str:
+    path = env_path if env_path is not None else DEFAULT_ENV_PATH
+    if path.is_file():
+        file_values = dotenv_values(path)
+        raw = file_values.get(name)
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    return os.environ.get(name, default).strip() or default
+
+
+def configured_model(env_path: Path | None = None) -> str:
+    return _read_setting("GEMINI_MODEL", DEFAULT_GEMINI_MODEL, env_path=env_path)
+
+
+def load_provider(env_path: Path | None = None) -> NoteProvider | None:
+    """Return the configured provider, or None when notes are not set up yet.
+
+    Reads ``.env`` dynamically so adding GEMINI_API_KEY later takes effect
+    without requiring a server restart.
+    """
+    api_key = _read_setting("GEMINI_API_KEY", "", env_path=env_path)
     if not api_key:
         return None
-    model = os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL).strip() or DEFAULT_GEMINI_MODEL
-    return GeminiProvider(api_key, model)
+    return GeminiProvider(api_key, configured_model(env_path=env_path))

@@ -1,37 +1,41 @@
 # RecordingNote — ローカル文字起こし版
 
-講義の音声を文字起こしし、学習ノートにまとめる日本語のツールです。文字起こしは**ブラウザ内のWebGPU**か、**このPCで動く Haas-ja-v1.0** を選べます。ノート生成は**Gemini API**をサーバー経由で使います。Colab、トンネル、バックエンドURL、APIキーの入力はありません。
+講義の音声を**自分の PC 上の Haas-ja-v1.0** で文字起こしし、**Gemini API**（サーバー経由）で学習ノートにまとめる日本語ツールです。クラウドトンネルやブラウザへのAPIキー入力は不要で、録音からノート出力までを1つのローカル画面で行えます。
 
-ページとAPIは1つのPythonサーバーが同じオリジン（`http://127.0.0.1:8000`）で配信します。ビルドやDBは不要です。
+## 特長
+
+- **どの PC でも動く Haas-ja-v1.0**：
+  - **macOS / Windows / Linux（CPU）**：コミュニティ製の量子化 ONNX 版（[`oboroge0/Haas-ja-v1.0-onnx-quantized`](https://huggingface.co/oboroge0/Haas-ja-v1.0-onnx-quantized) + `sherpa-onnx`）を自動で使い、GPU なしでも約 1 GB のメモリで高速に動作します。
+  - **Linux + NVIDIA GPU（Ampere 以降）**：公式の [`third-intelligence/Haas-ja-v1.0`](https://huggingface.co/third-intelligence/Haas-ja-v1.0)（`haas-asr`, bf16）を自動選択します。
+- **かんたん起動**：macOS / Linux は `./start.sh`、Windows は `start.bat` を実行するだけで仮想環境の作成からサーバー起動、ブラウザの自動表示まで完了します。
+- **Gemini ノート生成は後から有効化可能**：文字起こしだけなら API キー不要です。後から `.env` の `GEMINI_API_KEY` を埋めて保存すれば、サーバー再起動なしですぐに「AIノートを生成」が使えるようになります。
 
 ## ファイル構成
 
 | ファイル | 内容 |
 | --- | --- |
-| `index.html` | 設定・音声入力・文字起こし・ノート・履歴・使い方ガイド |
+| `start.sh` | macOS / Linux 用ワンステップ起動スクリプト（初回セットアップ＋自動ブラウザ表示） |
+| `start.bat` | Windows 用ワンクリック起動スクリプト（初回セットアップ＋自動ブラウザ表示） |
+| `server.py` | ページ配信、文字起こしジョブ API、Gemini ノート生成 API |
+| `asr_backend.py` | Haas-ja-v1.0 の自動判定・読み込み（GPU / CPU ONNX）、ffmpeg 変換、長尺分割 |
+| `notes.py` | ノート生成プロンプトと Gemini API プロバイダ（`.env` を都度参照） |
+| `index.html` | 録音・音声選択・文字起こし・ノート表示・履歴・ガイドの画面 |
+| `app.js` | 録音、API 通信、進捗表示、Markdown 描画、ブラウザ内履歴管理 |
 | `styles.css` | 白と青を基調にしたレスポンシブ表示 |
-| `app.js` | 録音、音声のデコード、Worker管理、API通信、Markdown表示、ブラウザ内保存 |
-| `asr-worker.js` | Transformers.js v4によるブラウザ推論（Workerとメインスレッドで共用） |
-| `server.py` | ページ配信、文字起こしジョブ、ノート生成API |
-| `asr_backend.py` | Haas-ja の読み込み、ffmpeg変換、long-form文字起こし |
-| `notes.py` | ノート生成プロンプトとGeminiプロバイダ |
-| `requirements.txt` | Pythonの依存関係 |
-| `start.sh` | 初回セットアップと起動をまとめて行うスクリプト |
-| `.env.example` | 設定のひな形（`.env` にコピーして使う） |
+| `requirements.txt` | 基本の Python 依存関係（macOS / Windows / Linux 共通） |
+| `requirements-gpu.txt` | Linux + NVIDIA Ampere 以降の GPU 向け追加依存関係 |
+| `.env.example` | 設定のひな形（初回起動時に `.env` へ自動コピー） |
 | `README.md` | この説明書 |
 
 ## 必要なもの
 
-- **Linux と NVIDIA GPU（CUDA）**。Haas-ja-v1.0 は CPU と macOS では動きません。
-- Python 3.11 以上。
-- CUDA対応のPyTorch。`python -c "import torch; print(torch.cuda.is_available())"` が `True` になることを確認してください。
-- ffmpeg。システムにない場合は `imageio-ffmpeg` の同梱バイナリを使います。
+- **Python 3.10 以上**（Windows はインストール時に「Add python.exe to PATH」を有効にしてください）
+- インターネット接続（初回のみパッケージとモデルを取得します）
+- **Linux + NVIDIA GPU（Ampere 以降）で公式 GPU 版を使う場合**：Python 3.11 以上、CUDA 対応の PyTorch
 
-ブラウザ方式だけを使う場合はGPUは不要です。ただし、その場合もページの配信にはローカルサーバーを使います。
+## クイックスタート
 
-## セットアップ
-
-いちばん簡単なのは `start.sh` です。初回だけ仮想環境の作成と依存関係の導入を行い、`.env` を用意してサーバーを起動します。
+### macOS / Linux
 
 ```sh
 git clone https://github.com/nine9-japan/recordingnote.git
@@ -39,139 +43,92 @@ cd recordingnote
 ./start.sh
 ```
 
-ブラウザで `http://127.0.0.1:8000` を開きます。
+初回のみ仮想環境（`.venv`）と必要なパッケージ、`.env` を自動で作成し、`http://127.0.0.1:8000` をブラウザで開きます。
 
-手動で行う場合は次のとおりです。
+### Windows
+
+1. リポジトリを取得します（Zip ダウンロードして展開、または `git clone`）。
+2. フォルダ内の **`start.bat`** をダブルクリックします。
+3. 初回セットアップ後、自動でブラウザに画面が開きます。
+
+### 手動で起動する場合
 
 ```sh
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env
-python server.py
+python server.py --open
 ```
 
-- 初回起動時、Haas-ja のモデル（約1.2GB）をHugging Faceから取得します。モデルはバックグラウンドで読み込むため、ページ自体はすぐ開きます。準備できるまで「状態を再確認」で状態を確認してください。
+- 初回起動時、Haas-ja モデルをバックグラウンドで取得します（CPU / ONNX 版は約 460 MB、GPU 版は約 1.2 GB）。画面は先に開き、準備が完了すると右上の状態表示が自動で「接続済み」に切り替わります。
 - 2回目以降はローカルのキャッシュから読み込みます。
-- ポートを変える場合は `.env` の `PORT` を変更します。`HOST` は認証がないため `127.0.0.1` のままにしてください。
 
 ## 使い方
 
-1. 「録音開始」→「停止」で録音するか、音声ファイルを選びます。プレビューで内容を確認できます。
-2. 文字起こしエンジンを選び、「文字起こし開始」を押します。
-3. 完了した本文を確認し、必要なら編集します。履歴は完了時に自動作成され、以後の編集は約0.4秒後に自動保存されます。
-4. 「AIノートを生成」を押します。Gemini APIキーが設定されていれば、文字起こし全文からMarkdownのノートを作ります。
-5. 「Markdownをコピー」または「.mdでダウンロード」で取り出せます。
-6. 履歴の項目を押すと、本文とノートを復元します。「削除」はこのブラウザ内の履歴だけを消します。
+1. **音声を用意**：ブラウザで「録音開始」→「停止」で録音するか、手元の音声ファイル（M4A / MP3 / WAV / WebM など）を選びます。
+2. **文字起こし**：「文字起こし開始」を押すと、この PC 上の Haas-ja-v1.0 が文字起こしを行います（音声は外部へ送信しません）。
+3. **確認・編集**：完了した本文はそのまま編集でき、約 0.4 秒後にブラウザ内の履歴へ自動保存されます。
+4. **AIノート生成（任意）**：「AIノートを生成」を押すと、Gemini API を使って見出し・重要語句・復習ポイント付きの Markdown ノートを作成します。「Markdownをコピー」または「.mdでダウンロード」で取り出せます。
 
-文字起こし欄に本文を直接貼り付けてノートを生成することもできます。この場合は「日時 ｜ テキスト入力」の履歴を作ります。
+文字起こし欄にテキストを直接貼り付けてノートだけを生成することもできます。
 
-## 文字起こしエンジン
+## Haas-ja-v1.0 の動作方式
 
-### ブラウザ方式（推奨）
+サーバーは `HAAS_DEVICE`（既定 `auto`）に従ってローカルで文字起こしを行います。
 
-- `@huggingface/transformers` v4 をCDNから動的importし、モデルはHugging Faceから取得します。初回はモデルのダウンロード（約1GB前後）が必要で、2回目以降はブラウザのキャッシュを使います。
-- `device: 'webgpu'` を優先し、利用できない場合は `device: 'wasm'` で再試行します。WebGPUには対応ブラウザとHTTPSまたはlocalhostが必要です。
-- 録音Blobとファイルは `AudioContext({ sampleRate: 16000 })` でデコードし、モノラルの `Float32Array` をWorkerへ渡します。音声は端末の外へ出ません。
-- モデルの既定値は `onnx-community/whisper-large-v3-turbo-ONNX` です。日本語特化の `onnx-community/kotoba-whisper-v2.2-ONNX` も選べます。
-- 推論は `language: 'japanese'`, `task: 'transcribe'`, `chunk_length_s: 30`, `stride_length_s: 5`。長尺音声の分割はpipeline内部に任せます。
-- Workerが使えない場合はメインスレッドで実行します。中止の反映が遅れる場合があります。
+- **CPU / ONNX モード（macOS / Windows / GPU 非搭載 Linux）**：
+  - `ffmpeg`（システムにない場合は `imageio-ffmpeg` 同梱バイナリ）で 16 kHz モノラル WAV に変換し、20〜25 秒単位の低音量区間で分割しながら `sherpa-onnx` で順番に推論します。
+  - 使用モデル：`oboroge0/Haas-ja-v1.0-onnx-quantized`（Apache 2.0）
+- **NVIDIA GPU モード（Linux + NVIDIA Ampere 以降 + CUDA）**：
+  - `start.sh` が NVIDIA Ampere 以降（Compute Capability 8.0 以上）を検出すると `requirements-gpu.txt` を導入し、公式の `third-intelligence/Haas-ja-v1.0`（bf16、`haas_asr.transcribe_longform`）で文字起こしします。
+  - `.env` の `HAAS_BATCH_SIZE`（既定 `8`）や `HAAS_VOCABULARY_JSON`（固有名詞の読み登録）が利用できます。
 
-### このPCのHaas-ja
+どちらのモードでも、音声ファイルは推論後すぐに削除され、PC の外へ送信されません。
 
-- サーバーが音声を受け取り、ffmpegで16kHzモノラルWAVに変換してから `haas_asr.transcribe_longform` で処理します。ブラウザ録音のWebMやM4Aもそのまま送れます。
-- GPUは1ジョブずつ直列に使います。長い講義は時間がかかります。
-- `HAAS_BATCH_SIZE`（既定 `8`）でバッチサイズを変更できます。GPUメモリが足りない場合は小さくしてください。
-- 固有名詞を登録する場合は `.env` の `HAAS_VOCABULARY_JSON` を使います。
+## ノート生成（Gemini API・後から設定）
 
-  ```sh
-  HAAS_VOCABULARY_JSON={"考古学概説II": ["こうこがくがいせつ"]}
-  ```
-
-- 音声はこのPCの外へ出ません。ジョブの一時ファイルは処理後に削除します。
-
-## ノート生成（Gemini）
-
-`.env` にAPIキーを設定してサーバーを再起動すると有効になります。
+文字起こし機能だけを使う場合、API キーは不要です。AIノート生成を有効にするには、フォルダ内の `.env` を開いて `GEMINI_API_KEY` を入力して保存してください。
 
 ```sh
-GEMINI_API_KEY=your-key
+GEMINI_API_KEY=your-gemini-api-key
 GEMINI_MODEL=gemini-2.5-flash
 ```
 
-- キーはサーバー側だけで使い、ブラウザへは返しません。localStorageにも保存しません。
-- `POST /notes` に文字起こし全文を渡し、サーバーが `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent` へ送ります。タイムアウトは180秒です。
-- プロンプトは `notes.py` の `NOTE_PROMPT` に1か所だけ定義しています。文字起こしにない事実を足さない、見出しと箇条書きで構成する、末尾に「重要語句」と「復習ポイント」を付ける、といった指示です。
-- キーが未設定の場合、ノート生成は「Gemini APIキーが未設定です」と案内します。文字起こしはそのまま使えます。
-- 将来ほかの生成先を追加する場合は、`notes.py` の `GeminiProvider` と同じ `generate(transcript)` を持つクラスを作り、`load_provider()` で返すようにします。フロントエンドとAPIの変更は不要です。
-- Geminiを使うときだけ、文字起こし全文をGoogleへ送ります。
+- サーバーが `/health` や `/notes` の処理時に `.env` を参照するため、キーを書き込んだあと**サーバーを再起動しなくても**そのまま「AIノートを生成」を押せます。
+- キーはサーバー側だけで扱い、ブラウザの `localStorage` や画面へは返しません。
+- ノート生成を実行したときだけ、文字起こしテキストを `https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent` へ送信します（タイムアウト 180 秒）。
+- 将来ほかの LLM プロバイダ（例：ローカル LLM）へ切り替える場合は、`notes.py` の `NoteProvider` プロトコル（`generate(transcript, title="")`）を満たすクラスを追加して `load_provider()` で返すだけで対応できます。
 
 ## API
 
-サーバーは `127.0.0.1` でのみ待ち受け、認証はありません。外部へ公開しないでください。
+サーバーは原則 `127.0.0.1` でのみ待ち受けます（認証なし）。外部へ公開しないでください。
 
 | メソッド | パス | 内容 |
 | --- | --- | --- |
-| `GET` | `/health` | モデルの読み込み状態とノート生成の設定状態 |
-| `POST` | `/jobs` | `multipart/form-data` の `file` に音声を入れて送信 |
-| `GET` | `/jobs/{job_id}` | `queued` / `running` / `done` / `error` と本文 |
+| `GET` | `/health` | モデルの読み込み状態（GPU / CPU）とノート生成の設定状態 |
+| `POST` | `/jobs` | `multipart/form-data` の `file` に音声を入れて文字起こし開始 |
+| `GET` | `/jobs/{job_id}` | `queued` / `running`（`phase`, `progress` 付き） / `done` / `error` と本文 |
 | `POST` | `/notes` | `{"transcript": "...", "title": "..."}` → `{"note": "Markdown"}` |
 
-`/health` の例:
-
-```json
-{
-  "ok": true,
-  "engine": "third-intelligence/Haas-ja-v1.0",
-  "model_loaded": true,
-  "model_loading": false,
-  "model_error": null,
-  "notes": { "ready": true, "provider": "gemini" }
-}
-```
-
-- 文字起こしジョブはメモリ上に最大20件保持します。サーバーを再起動すると消えます。
-- アップロードの上限は `MAX_UPLOAD_MB`（既定2048MB）です。
-- 文字起こしの待機中は3秒間隔で `/jobs/{job_id}` を確認します。中止しても、サーバー側の処理は継続する場合があります。
+- 文字起こしジョブはメモリ上に最大 20 件保持します。
+- アップロード上限は `.env` の `MAX_UPLOAD_MB`（既定 `2048` MB）です。
 
 ## 保存とプライバシー
 
-| localStorageキー | 保存するもの |
-| --- | --- |
-| `rn_asr_engine` | 文字起こしエンジン（`browser` / `local`、既定は `browser`） |
-| `rn_browser_asr_model` | ブラウザ文字起こしのモデルID |
-| `rn_history` | `id, createdAt, title, transcript, note` を持つオブジェクトの配列 |
-
-- 旧版の `rn_backend_url`・`rn_backend_key`・`rn_gemini_key`・`rn_gemini_model` は起動時に削除します。
-- 音声ファイル自体は保存しません。履歴はこのブラウザ・このプロファイルだけのものです。
-- サイトにアカウント登録、アクセス解析、キーや本文の収集はありません。
-- localStorageは暗号化されません。共用端末ではサイトデータを消してください。
-- 大切なノートは `.md` でダウンロードしてください。ブラウザのサイトデータ削除で履歴と設定も消えます。
-
-## GitHub Pages で使う場合
-
-`index.html`・`styles.css`・`app.js`・`asr-worker.js` は静的ファイルなので、GitHub Pagesでもブラウザ方式だけは動きます。ただし、HTTPSのページから `http://127.0.0.1` のローカルAPIへは接続できないため、Haas-ja とノート生成は使えません。全機能を使う場合はローカルサーバーから開いてください。
+- 履歴はブラウザの `localStorage`（キー `rn_history`）に `{ id, createdAt, title, transcript, note }` の配列として保存されます。
+- 音声ファイル自体はブラウザにもサーバーにも保存しません。
+- 起動時に、旧バージョンのクライアント側設定キー（`rn_backend_url`・`rn_backend_key`・`rn_gemini_key`・`rn_gemini_model`・`rn_asr_engine`・`rn_browser_asr_model`）は自動で削除します。
+- 大切なノートは「.mdでダウンロード」で手元に保存してください。
 
 ## トラブルシューティング
 
-- **「NVIDIA GPU（CUDA）を利用できません」**: CUDA対応のPyTorchが入っているか確認してください。`nvidia-smi` と `python -c "import torch; print(torch.cuda.is_available())"` を実行します。
-- **モデルの読み込みが終わらない**: 初回は約1.2GBの取得があります。ターミナルの表示と `http://127.0.0.1:8000/health` を確認してください。
-- **ポートが使用中**: `.env` の `PORT` を `8001` などに変更し、表示されたURLを開きます。
-- **音声を変換できない**: ffmpeg を導入するか、`pip install imageio-ffmpeg` を実行してください。WAV・MP3への変換でも回避できます。
-- **ブラウザ方式が動かない**: WebGPU対応ブラウザとlocalhostで開いているか確認してください。「このPCのHaas-ja」へ切り替えることもできます。
+- **「Haas-ja モデルを準備中です」のまま進まない**：初回はモデルのダウンロード（約 460 MB、GPU 版は約 1.2 GB）が行われます。ターミナルのログ表示を確認してください。
+- **ポートが使用中**：`.env` の `PORT` を `8001` などに変更して再起動してください。
+- **音声を変換できない**：システムに `ffmpeg` を導入するか、`pip install imageio-ffmpeg` が入っているか確認してください。
+- **GPU があるのに CPU モードになる**：`nvidia-smi` と `python -c "import torch; print(torch.cuda.is_available())"` を確認してください。公式 GPU 版は Linux + NVIDIA Ampere（RTX 30 シリーズ等）以降が必要です。
 
-## 確認用コマンド
+## クレジット・ライセンス
 
-```sh
-node --check app.js
-node --check asr-worker.js
-python3 -m py_compile server.py asr_backend.py notes.py
-python3 server.py
-```
-
-別のターミナルで配信とAPIを確認できます。
-
-```sh
-curl -I http://127.0.0.1:8000/index.html
-curl -s http://127.0.0.1:8000/health
-```
+- Speech recognition model: [third-intelligence/Haas-ja-v1.0](https://huggingface.co/third-intelligence/Haas-ja-v1.0) by Third Intelligence (Apache License 2.0).
+- CPU / ONNX conversion: [oboroge0/Haas-ja-v1.0-onnx-quantized](https://huggingface.co/oboroge0/Haas-ja-v1.0-onnx-quantized) running via [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) (Apache License 2.0).
